@@ -44,7 +44,11 @@ Ask these, one at a time:
    uncheckable work like open-ended research.
 8. **Roster.** Install all five sample bots, or a subset?
 9. **Desktop console.** Install it? It needs Node and about 200 MB of Electron.
-   The runner and the skill work without it.
+   The runner and the skill work without it. If the user's npm blocks install
+   scripts, `npm install` skips Electron's `postinstall` and no binary arrives.
+   Tell them the two commands and let them decide; do not change their npm
+   policy for them:
+   `npm install-scripts approve electron && npm rebuild electron`
 
 ## Install
 

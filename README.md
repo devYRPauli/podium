@@ -182,6 +182,19 @@ hash.
 cd desktop && npm install && npm start
 ```
 
+If your npm blocks install scripts, `npm install` will report that Electron's
+`postinstall` was skipped, and nothing will start: that script is what downloads
+the Electron binary. Allow it for this one package, then rebuild:
+
+```sh
+npm install-scripts approve electron && npm rebuild electron
+```
+
+That writes an `allowScripts` entry into `desktop/package.json`. It is
+deliberately not committed here, because the field overrides whatever policy
+your own npm config sets, and that is not a decision this repository should make
+for you.
+
 It opens on **Receipts**: every settled job with the check that ran and the
 verdict it produced. **Roster** shows the bots and their memory. Delegated jobs
 appear live on the right with their verdict badge.
