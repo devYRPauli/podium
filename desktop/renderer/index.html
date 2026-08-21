@@ -18,10 +18,13 @@
         <span id="conn" class="dot" title="orchestrator stopped"></span>
       </div>
 
+      <!-- Receipts leads. It is the one view that works for everyone: it reads
+           the ledger off disk. Talk needs a harness that speaks Pi's RPC
+           protocol, so it cannot be the first thing a new install shows. -->
       <nav class="tabs" role="tablist">
-        <button class="tab is-on" data-view="talk" role="tab">Talk</button>
+        <button class="tab is-on" data-view="receipts" role="tab">Receipts</button>
         <button class="tab" data-view="roster" role="tab">Roster</button>
-        <button class="tab" data-view="receipts" role="tab">Receipts</button>
+        <button class="tab" data-view="talk" role="tab">Talk</button>
       </nav>
 
       <div id="rail-body"></div>
@@ -37,7 +40,7 @@
     <main id="centre">
       <header id="banner" hidden></header>
 
-      <section id="view-talk" class="view is-on">
+      <section id="view-talk" class="view">
         <div id="transcript" aria-live="polite"></div>
         <form id="composer">
           <textarea id="input" rows="1" placeholder="Ask the chief of staff to get something done..."
@@ -51,7 +54,7 @@
       </section>
 
       <section id="view-roster" class="view"></section>
-      <section id="view-receipts" class="view"></section>
+      <section id="view-receipts" class="view is-on"></section>
     </main>
 
     <!-- Right: what was delegated, and whether it was actually checked -->

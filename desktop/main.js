@@ -83,6 +83,10 @@ function createWindow() {
       setTimeout(async () => {
         const report = {};
         try {
+          // Receipts is the view a new install opens on, so reach Talk
+          // explicitly rather than assuming it is already showing.
+          await js("document.querySelector('[data-view=talk]').click()");
+          await settle(400);
           report.talk = JSON.parse(await js(
             "JSON.stringify({" +
             "bots: document.querySelectorAll('#rail-body .bot').length," +

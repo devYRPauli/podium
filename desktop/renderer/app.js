@@ -10,7 +10,7 @@
 const api = window.podium;
 
 const state = {
-  view: "talk",
+  view: "receipts",
   bots: [],
   jobs: [],
   turns: [],          // {who, text} - the local record of the conversation
