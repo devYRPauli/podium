@@ -36,7 +36,8 @@ templates/              rendered at install time by SETUP.md. Slots are {{LIKE_T
   podium.conf.tmpl        defines podium_executor() - how a job actually runs
   ORCHESTRATOR.md.tmpl    the chief-of-staff prompt, installed as a Claude Code skill
 desktop/                Electron console. main/preload/renderer split, no Node in the renderer
-test/run.sh             the runner suite - 92 assertions against a stand-in executor
+test/run.sh             the runner suite - 102 assertions against a stand-in executor
+test/ascii.sh           repo hygiene: every tracked file is plain ASCII. CI runs it.
 demo.sh                 thirty-second walkthrough, no auth needed
 ```
 
@@ -63,17 +64,33 @@ State lives in `$PODIUM_HOME` (default `~/.podium`): `jobs/<id>/`, `log.jsonl`,
 - **A job's cwd defaults to wherever `podium run` was invoked**, not to the bot's
   `workspace/`. A detached job with a writing executor will edit the repository
   you were standing in, and it keeps doing so after you close the terminal. Pass
-  `--cwd` when that is not what you want.
-- **A bot's `tools:` frontmatter is not enforced.** The runner never translates
-  it into executor flags, so the executor arrives with its own full toolset. The
-  `scout` bot, whose prompt says it never changes anything, will happily write a
-  file. Roles are prompts, not capability boundaries. Do not describe them as
-  sandboxes.
+  `--cwd` when that is not what you want. `podium run` prints the bot, the
+  directory and the write policy to stderr before it detaches, so the surprise
+  happens before the job does. Keep that on stderr: callers capture the job id
+  from stdout.
+- **A bot's `tools:` frontmatter is enforced through the executor, at the
+  executor's grain.** The runner derives one boolean, "may this bot write", from
+  whether the list contains `write` or `edit`, exports it as
+  `PODIUM_BOT_WRITES`, and the executor turns it into a sandbox flag. That is a
+  real boundary: a read-only bot cannot create a file even when the brief tells
+  it to, proved live against codex with a neutral prompt. Two limits worth
+  stating: the grain is coarse under codex (read-only or read-write, nothing
+  finer), and an executor that ignores the variable silently enforces nothing,
+  which is why `doctor` warns about exactly that. A bot with no `tools:` line is
+  unrestricted, because tightening that would silently break existing rosters.
+- **`JOB_TOOLS` and `JOB_WRITES` must stay defaulted where the worker reads
+  them.** `set -u` is on. A job queued by an older podium has neither in its
+  `meta.env`, and a bare reference killed the worker mid-flight: the job stranded
+  in `running`, which is not settled, so `--wait` hung and no receipt was ever
+  written. A test now runs the worker against a pre-upgrade `meta.env`. Any new
+  `JOB_` field needs the same treatment.
 - **The desktop console's chat pane still drives `pi --mode rpc`.** It is the one
   Pi dependency left. Pi's RPC mode is strict JSONL, LF only, and Node's
   `readline` also splits on U+2028/U+2029, which are legal inside JSON strings.
   `desktop/lib/orchestrator.js` splits by hand and a test proves a payload
-  carrying both survives. The ledger and receipt views need no Pi.
+  carrying both survives. The ledger and receipt views need no Pi, so `main.js`
+  preflights the harness binary and says what is missing rather than surfacing
+  `spawn pi ENOENT`, which reads like the whole console is broken.
 - **The executor config has no unit coverage by nature** - the stand-in executor
   never parses flags. Three real bugs have shipped there: `pi --cwd`, a flag that
   does not exist; a Codex line that dropped `$5` and silently ran every bot as
@@ -85,13 +102,14 @@ State lives in `$PODIUM_HOME` (default `~/.podium`): `jobs/<id>/`, `log.jsonl`,
 ## Working on this
 
 ```sh
-./test/run.sh                 # runner:  92 assertions
+./test/ascii.sh               # hygiene: plain ASCII everywhere
+./test/run.sh                 # runner:  102 assertions
 cd desktop && npm test        # bridges: 51 assertions
 cd desktop && npm run smoke   # the UI:  13 assertions + screenshots (needs xvfb on Linux)
 ./demo.sh                     # see the whole argument in 30 seconds
 ```
 
-None of these calls a real model. CI runs all three on macOS and Linux.
+None of these calls a real model. CI runs all four, on macOS and Linux.
 
 **Before claiming anything works, run it.** This project exists because agents
 assert completion. Holding it to a lower standard than it holds its own bots
@@ -139,16 +157,24 @@ assume more.
 
 Runner, console, receipts and CI are done and green on macOS and Linux.
 
-**Proved live on 2026-08-21.** Podium ran six real jobs through `codex exec` on
-a ChatGPT subscription. Four reached `verified`. Two reached `rejected /
+**Proved live on 2026-08-21.** Podium ran seven real jobs through `codex exec`
+on a ChatGPT subscription. Five reached `verified`. Two reached `rejected /
 failed_check` with `exit_code=0`, which is the entire thesis: the bot exited
 cleanly and the runner overrode it. A detached worker's parent pid was 1. The
-receipt chain stayed intact across all six.
+receipt chain stayed intact throughout.
 
-Two of the verified jobs changed this repository: the `doctor --executor` write
-probe, and the repository-wide ASCII conversion.
+Three of the verified jobs changed this repository: the `doctor --executor`
+write probe, the repository-wide ASCII conversion, and tool-policy enforcement.
 
-Three things that run taught us, all worth keeping:
+**Role boundaries are now real, and were proved the only way that counts.** Two
+probe bots with identical neutral prompts, differing only in `tools:`, were each
+told to create a file. The read-only one could not. Testing this with `scout`
+would have proved nothing, because scout's prompt already tells it never to
+change anything: a pass could have meant the sandbox worked or that the model
+politely declined. Isolate the boundary from the persuasion or you are measuring
+the wrong thing.
+
+Four things that run taught us, all worth keeping:
 
 - **The brief is the first suspect.** One rejected job was a scribe that found a
   contradiction in its own brief and stopped. The bot was right and the brief
@@ -160,16 +186,20 @@ Three things that run taught us, all worth keeping:
   acceptance check used a broken bracket expression and passed on every input.
   It was an ASCII check that could not detect a non-ASCII character. Run a check
   against a known-bad input before you trust it.
+- **A green check is not a review.** Tool-policy enforcement passed every
+  assertion and still stranded any job queued before the upgrade, because every
+  test builds a fresh job and none simulated a migration. The check tested the
+  feature; nobody had asked what the change did to work already in flight.
 
 The honest note on cost: writing the brief and an independent check took longer
 than either task took to run. Delegating one short task is a net loss. The value
 is in long tasks, parallel tasks, and tasks you would otherwise never have
 verified at all.
 
-**Not yet earned:** enforced role boundaries, and any measurement of this
-running unattended over hours rather than minutes.
+**Not yet earned:** any measurement of this running unattended over hours rather
+than minutes, and a Talk pane that works without Pi.
 
 Honest limits, stated in the README rather than hidden: an acceptance check is
-only as good as its author; the concurrency cap is still a prompt rather than a
-mechanism; there is no sandbox by default; and fanning out multiplies token
-spend against a subscription priced for one person.
+only as good as its author; role boundaries are only as fine as the executor's
+sandbox; the concurrency cap is still a prompt rather than a mechanism; and
+fanning out multiplies token spend against a subscription priced for one person.

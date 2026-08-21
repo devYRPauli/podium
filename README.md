@@ -79,6 +79,11 @@ readable in a sitting, with no database, no daemon and no server.
   A failing check turns the job `rejected`, whatever the bot reported.
 - **Throttling is not a hang.** A job killed while its output shows a rate limit
   settles as `rate_limited`, so starvation never gets debugged as a crash.
+- **A bot's `tools:` list is enforced, not advised.** A bot with no `write` or
+  `edit` runs in a read-only sandbox and cannot create a file even when the brief
+  tells it to. The receipt records which policy applied. The grain is the
+  executor's: `codex` gives read-only or read-write, `claude` gives a per-tool
+  list. A bot with no `tools:` line is unrestricted.
 
 ## Status
 
@@ -206,12 +211,20 @@ memory, and **Receipts** - every settled job with the check that ran and the
 verdict it produced. Delegated jobs appear live on the right with their verdict
 badge.
 
-The conversation is the front door; the receipts are why it exists.
+**Talk needs a harness that speaks Pi's RPC protocol, and it is the last part of
+this project that does.** It drives `pi --mode rpc` by default; point it at
+another binary with the `piBin` setting. Without one, Talk reports what is
+missing and the other two views work normally, because they read the ledger
+straight off disk. If Claude Code is your orchestrator, your terminal already is
+the Talk pane, and the console is a receipts viewer.
+
+The receipts are why it exists.
 
 ## Tests
 
 ```sh
-./test/run.sh                 # runner:  90 assertions
+./test/ascii.sh               # hygiene: every tracked file is plain ASCII
+./test/run.sh                 # runner:  102 assertions
 cd desktop && npm test        # bridges: 51 assertions
 cd desktop && npm run smoke   # the UI:  13 assertions + screenshots
 ```
@@ -226,9 +239,12 @@ console's unverified count matches `podium ledger --unverified` exactly. It need
 
 - macOS and Linux only.
 - Podium never handles secrets. Authentication is you, running the command.
-- Bots share your filesystem. There is no sandbox in v0; run Pi under
-  [Gondolin](https://github.com/earendil-works/gondolin) or a container if you
-  need one.
+- **A bot is confined only as well as its executor confines it.** A bot with no
+  `write` or `edit` in its `tools:` runs read-only and is genuinely stopped from
+  writing. Beyond that one boundary, bots share your filesystem: a writing bot
+  can edit anything under its working directory, which defaults to wherever you
+  ran `podium run`. Run the executor in a container if you need more, and check
+  `podium doctor` - it warns when the configured executor enforces nothing.
 - **An acceptance check is only as good as the person who wrote it.** The runner
   proves the check passed; it cannot prove the check was worth running. The
   ledger stores every check verbatim so a worthless one is visible rather than
