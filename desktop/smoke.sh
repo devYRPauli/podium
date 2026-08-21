@@ -6,8 +6,24 @@ set -uo pipefail
 cd "$(dirname "$0")"
 KIT="$(cd .. && pwd)"
 
-command -v xvfb-run >/dev/null 2>&1 || { echo "smoke: xvfb-run is required (apt install xvfb)"; exit 1; }
 [ -x ./node_modules/.bin/electron ] || { echo "smoke: run npm install first"; exit 1; }
+
+# xvfb-run is a Linux need. macOS has its own window server, so Electron runs
+# there with no help. Demanding xvfb everywhere meant this suite had never once
+# run on a Mac, while the README said it was only needed on Linux.
+if [ "$(uname -s)" != "Darwin" ]; then
+  command -v xvfb-run >/dev/null 2>&1 \
+    || { echo "smoke: xvfb-run is required on Linux (apt install xvfb)"; exit 1; }
+fi
+
+launch_electron() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    ./node_modules/.bin/electron . --no-sandbox --disable-gpu
+  else
+    xvfb-run -a --server-args="-screen 0 1400x900x24" \
+      ./node_modules/.bin/electron . --no-sandbox --disable-gpu
+  fi
+}
 
 OUT=${1:-$(mktemp -d)/shot}
 mkdir -p "$(dirname "$OUT")"
@@ -40,8 +56,7 @@ P="$HOME_DIR/bin/podium"
 "$P" run researcher  "FAKE_RATELIMIT compare vector stores" --timeout 3 >/dev/null
 sleep 6
 
-report=$(PODIUM_SMOKE="$OUT" xvfb-run -a --server-args="-screen 0 1400x900x24" \
-  ./node_modules/.bin/electron . --no-sandbox --disable-gpu 2>/dev/null | grep '^SMOKE ' | head -1)
+report=$(PODIUM_SMOKE="$OUT" launch_electron 2>/dev/null | grep '^SMOKE ' | head -1)
 
 if [ -z "$report" ]; then echo "smoke: the app produced no report (did it crash?)"; exit 1; fi
 echo "${report#SMOKE }"
