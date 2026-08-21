@@ -10,6 +10,7 @@ command -v xvfb-run >/dev/null 2>&1 || { echo "smoke: xvfb-run is required (apt 
 [ -x ./node_modules/.bin/electron ] || { echo "smoke: run npm install first"; exit 1; }
 
 OUT=${1:-$(mktemp -d)/shot}
+mkdir -p "$(dirname "$OUT")"
 HOME_DIR=$(mktemp -d)
 trap 'rm -rf "$HOME_DIR"' EXIT
 

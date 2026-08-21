@@ -53,10 +53,12 @@ jobs:
         run: npm ci || npm install
       - name: Drive every view headless
         working-directory: desktop
-        run: ./smoke.sh
+        # Write into the workspace. A /tmp glob makes upload-artifact walk the
+        # whole of /tmp, where it hits root-owned snap directories and dies.
+        run: ./smoke.sh screenshots/shot
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: screenshots
-          path: /tmp/**/shot-*.png
-          if-no-files-found: ignore
+          path: desktop/screenshots/*.png
+          if-no-files-found: warn

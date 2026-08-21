@@ -6,6 +6,9 @@ log.jsonl.lock/
 */workspace/
 bots/*/memory.md
 
+# Smoke-test output.
+desktop/screenshots/
+
 # Node
 node_modules/
 dist/
