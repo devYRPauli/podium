@@ -134,8 +134,9 @@ before you fan out.
 
 ## Install
 
-Read `SETUP.md` first - it is short, and it describes an agent writing files into
-your configuration. Then point your agent at this directory:
+Read [`docs/SETUP.md`](docs/SETUP.md) first - it is short, and it describes an
+agent writing files into your configuration. Then point your agent at this
+directory:
 
 > Set up Podium from this repo.
 

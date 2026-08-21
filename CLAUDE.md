@@ -32,7 +32,7 @@ stays unverified forever and surfaces under `podium ledger --unverified`.
 ```
 bin/podium              the runner. Zero deps beyond bash + coreutils. POSIX only.
 bots/<name>/bot.md      a bot: YAML frontmatter + system prompt as the body
-templates/              rendered at install time by SETUP.md. Slots are {{LIKE_THIS}}
+templates/              rendered at install time by docs/SETUP.md. Slots are {{LIKE_THIS}}
   podium.conf.tmpl        defines podium_executor() - how a job actually runs
   ORCHESTRATOR.md.tmpl    the chief-of-staff prompt, installed as a Claude Code skill
 desktop/                Electron console. main/preload/renderer split, no Node in the renderer

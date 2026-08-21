@@ -91,7 +91,10 @@ P="$PODIUM_HOME/bin/podium"
 "$P" bots                # the roster
 
 # 1. A job that should VERIFY. The check is real: it fails if the file is absent.
-id=$("$P" run scout "Write the single word PODIUM_OK into ./podium-ok.txt" \
+# implementer, not scout: scout's tools list has no write, so the runner puts
+# it in a read-only sandbox and it CANNOT create this file. That is the tool
+# policy working, but it would look like a broken install.
+id=$("$P" run implementer "Write the single word PODIUM_OK into ./podium-ok.txt" \
        --check "grep -q PODIUM_OK ./podium-ok.txt" --timeout 180)
 echo "job: $id"
 
