@@ -156,11 +156,13 @@ different problems. Fanning out three specialists against a subscription priced
 for one interactive human is the highest-risk assumption in this whole design,
 and starvation reported as a hang would send you debugging the wrong thing.
 
-**Layer 3 - Orchestrator.** A pi extension registering five tools -
-`roster`, `delegate`, `check`, `collect`, `remember` - plus `/bots` and `/jobs`.
-The chief-of-staff prompt sits alongside it as a skill. `collect` spills large
-output to a path instead of pasting it, which is what keeps the orchestrator's
-context from filling with other agents' logs.
+**Layer 3 - Orchestrator.** *(revised 2026-08-21, with decision 1.)* Originally a
+pi extension registering five tools: `roster`, `delegate`, `check`, `collect`
+and `remember`. That extension is deleted. Claude Code runs `podium` with the
+Bash tool it already has, so the five tools became five commands and 243 lines
+of TypeScript became none. The chief-of-staff prompt survives as a Claude Code
+skill, and it still tells the orchestrator to return paths rather than paste
+output, which is what keeps its context from filling with other agents' logs.
 
 **Layer 4 - Memory.** Looma. Per-bot session history becomes token-budgeted
 context packs, injected as "what we did last time". This is the layer that turns
@@ -234,7 +236,7 @@ launching shell exits, and that a job whose executor exited 0 is still `rejected
 when its acceptance check fails.
 
 **Step 2b - Desktop console.** *(done, unsigned)*
-`desktop/` plus 47 assertions and a headless smoke test that drives every view
+`desktop/` plus 52 assertions and a headless smoke test that drives every view
 and writes screenshots. Proof: the smoke run reports the right verdict badges and
 the console's unverified count matches `podium ledger --unverified` exactly.
 Not notarized - macOS needs a right-click -> Open the first time.
@@ -289,9 +291,13 @@ Stated so they do not get discovered later as surprises.
 - **The concurrency cap is still a prompt.** `{{MAX_PARALLEL}}` asks the
   orchestrator to behave; nothing stops it launching twenty jobs. This belongs in
   the runner and is step 8.
-- **No sandbox by default.** Bots run with your permissions on your filesystem.
+- **One sandbox boundary, and only one.** A bot with no `write` or `edit` in its
+  `tools:` runs read-only and genuinely cannot write. Past that, a writing bot
+  runs with your permissions under its working directory, which defaults to
+  wherever `podium run` was invoked.
 - **`cancel` kills the worker, not necessarily its grandchildren.** An executor
-  that spawns its own children can leak them.
+  that spawns its own children can leak them. It does now write a receipt before
+  it goes, so a cancelled job is recorded rather than vanishing.
 - **The desktop app is unsigned and un-notarized.** Fine for you; a bad first
   impression for a stranger, against competitors shipping signed installers.
 - **Untested against a live model.** Everything is proved with a fake executor.
