@@ -20,8 +20,17 @@ podium_executor() {
 #     # Codex has no system-prompt flag, so the bot's prompt is prepended to the
 #     # brief. Omit this and the bot's identity, rules and memory are silently
 #     # dropped - the job still succeeds, it is just not that bot doing it.
+#     #
+#     # -s workspace-write is load-bearing. `codex exec` defaults to a
+#     # read-only sandbox, so without it the implementer bot cannot write a
+#     # single file and every write-shaped check fails. The receipt then reads
+#     # like the model failed when the config was what blocked it.
+#     #
+#     # -m is guarded so an unset model falls through to ~/.codex/config.toml
+#     # instead of becoming an empty -m "", which codex rejects.
 #     { cat "$5"; printf '\n\n---\n\n'; cat "$4"; } | \
-#       codex exec -m "$1" -C "$2" --skip-git-repo-check -o "$3" -
+#       codex exec ${1:+-m "$1"} -C "$2" -s workspace-write \
+#         --skip-git-repo-check -o "$3" -
 #   }
 #
 # Alternative - Claude Code:
