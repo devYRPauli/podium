@@ -175,9 +175,27 @@ test("run() passes options through as flags", async () => {
     bin: "/fake",
     exec: (b, a, o, cb) => { seen = a; cb(null, "20260821-000000-1\n", ""); },
   });
-  const id = await p.run("scout", "look", { cwd: "/repo", model: "m", timeout: 60 });
+  const id = await p.run("scout", "look", { cwd: "/repo", model: "m", timeout: 60, check: "npm test" });
   assert.strictEqual(id, "20260821-000000-1", "the id is trimmed");
-  assert.deepStrictEqual(seen, ["run", "scout", "look", "--cwd", "/repo", "--model", "m", "--timeout", "60"]);
+  assert.deepStrictEqual(seen, [
+    "run", "scout", "look", "--cwd", "/repo", "--model", "m", "--timeout", "60", "--check", "npm test",
+  ]);
+});
+
+// This assertion used to pin the arg list WITHOUT --check, so it certified the
+// bug: main.js passed a check, Podium.run dropped it, and every job launched
+// from the console settled unverified while the caller believed it was checked.
+// A test can hold a defect in place as firmly as it can hold a feature.
+test("run() never drops the acceptance check", async () => {
+  let seen = null;
+  const p = new Podium({
+    home: tmpHome(),
+    bin: "/fake",
+    exec: (b, a, o, cb) => { seen = a; cb(null, "id\n", ""); },
+  });
+  await p.run("implementer", "fix parse()", { check: "npm test -- parser" });
+  assert.ok(seen.includes("--check"), "the check must reach the runner");
+  assert.strictEqual(seen[seen.indexOf("--check") + 1], "npm test -- parser");
 });
 
 test("PODIUM_HOME is forced into the child environment", async () => {

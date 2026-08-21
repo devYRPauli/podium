@@ -136,11 +136,17 @@ class Podium {
     return this._run(["result", id]);
   }
 
-  async run(bot, brief, { cwd, model, timeout } = {}) {
+  // `check` is not optional garnish. main.js has always passed it and this
+  // dropped it on the floor, so every job launched from the console ran with no
+  // acceptance check and settled unverified, while the caller believed one was
+  // set. In a tool whose whole claim is that a runner decides, that was the
+  // worst bug it could have.
+  async run(bot, brief, { cwd, model, timeout, check } = {}) {
     const args = ["run", bot, brief];
     if (cwd) args.push("--cwd", cwd);
     if (model) args.push("--model", model);
     if (timeout) args.push("--timeout", String(timeout));
+    if (check) args.push("--check", check);
     return (await this._run(args)).trim();
   }
 
