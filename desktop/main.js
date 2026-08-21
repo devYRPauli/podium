@@ -200,8 +200,34 @@ const handlers = {
 
 // ---- IPC: orchestrator ----------------------------------------------------
 
+// The chat pane drives a harness that speaks Pi's RPC protocol. Nothing else in
+// the console does: Jobs and Receipts read the ledger straight off disk. So a
+// missing harness must report itself plainly rather than surface as
+// "spawn pi ENOENT", which reads like the whole console is broken.
+function resolveHarness(bin) {
+  if (!bin) return null;
+  if (bin.includes(path.sep)) return fs.existsSync(bin) ? bin : null;
+  for (const dir of (process.env.PATH || "").split(path.delimiter).filter(Boolean)) {
+    const candidate = path.join(dir, bin);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // not here; keep looking
+    }
+  }
+  return null;
+}
+
 handlers["orc:start"] = async () => {
   if (orc) return { running: true };
+  if (!resolveHarness(settings.piBin)) {
+    throw new Error(
+      `The chat pane needs "${settings.piBin}" on PATH, and it is not there. `
+      + "It speaks Pi's RPC protocol, so it needs pi or another harness that does. "
+      + "Jobs and Receipts work without it, and podium delegates fine from the terminal."
+    );
+  }
   orc = new Orchestrator({
     bin: settings.piBin,
     cwd: settings.cwd,
