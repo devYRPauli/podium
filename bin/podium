@@ -749,9 +749,48 @@ cmd_bots() {
 cmd_cancel() {
   local id=${1:-}; [ -n "$id" ] || die "usage: podium cancel <id>"
   local jd; jd=$(job_dir "$id"); [ -d "$jd" ] || die "unknown job: $id"
+  local cur; cur=$(cat "$jd/status" 2>/dev/null || echo queued)
+  if is_settled "$cur"; then
+    echo "already $cur: $id"
+    return 0
+  fi
+
+  # shellcheck disable=SC1091
+  . "$jd/meta.env"
+
   local pid; pid=$(cat "$jd/pid" 2>/dev/null || echo "")
   [ -n "$pid" ] && kill -TERM "-$pid" 2>/dev/null; kill -TERM "$pid" 2>/dev/null
   echo cancelled > "$jd/status"
+  # `status` reads this file and the ledger reads the receipt. They must agree,
+  # or the tool disagrees with its own record about whether work was verified.
+  echo unverified > "$jd/verdict"
+
+  # Killing the worker takes its receipt with it, and `cancelled` is a settled
+  # state, so the job was terminal and unrecorded: it ran and left nothing
+  # behind. That is the one outcome this project forbids, and it was true of
+  # every cancelled job. The runner writes the receipt here instead.
+  #
+  # Give the worker a moment first. If it settled itself in the gap, its receipt
+  # is already in the ledger and a second one would fork the record.
+  sleep 1
+  if [ -s "$PODIUM_LOG" ] && grep -q "\"id\":\"$JOB_ID\"" "$PODIUM_LOG" 2>/dev/null; then
+    echo "cancelled $id"
+    return 0
+  fi
+
+  local started dur=0
+  started=$(cat "$jd/started" 2>/dev/null || echo "")
+  [ -n "$started" ] && dur=$(( $(date +%s) - started ))
+  mkdir -p "$(dirname "$PODIUM_LOG")"
+  append_receipt "$(printf '{"ts":"%s","id":"%s","bot":"%s","model":"%s","status":"cancelled","exit_code":null,"duration_secs":%s,"timed_out":false,"verdict":"unverified","verified":false,"check":"%s","check_exit":null,"cwd":"%s","writes":%s}' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$(json_escape "$JOB_ID")" \
+    "$(json_escape "$JOB_BOT")" \
+    "$(json_escape "$JOB_MODEL")" \
+    "$dur" \
+    "$(json_escape "${JOB_CHECK:-}")" \
+    "$(json_escape "$JOB_CWD")" \
+    "${JOB_WRITES:-1}")"
   echo "cancelled $id"
 }
 

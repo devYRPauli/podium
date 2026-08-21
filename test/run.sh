@@ -221,6 +221,30 @@ assert_contains "a job queued before the upgrade still settles" \
 assert_ne "a job queued before the upgrade still leaves a receipt" \
   "$(wc -l < "$log" | tr -d ' ')" "$before"
 
+# `cancelled` is a settled state, so a cancelled job with no receipt is terminal
+# and unrecorded: it ran and left nothing behind. Killing the worker took its
+# receipt with it, so the runner writes one here. Cancelled work is unverified.
+cat > "$PODIUM_HOME/slow.conf" <<SLOW
+podium_executor() { sleep 20; printf 'late\n' > "\$3"; }
+PODIUM_BOTS_DIR="$PODIUM_HOME/bots"
+PODIUM_JOBS_DIR="$PODIUM_HOME/jobs"
+PODIUM_LOG="$log"
+SLOW
+before=$(wc -l < "$log" | tr -d ' ')
+cid=$(PODIUM_CONF="$PODIUM_HOME/slow.conf" "$PODIUM" run writer "slow work" --check "true" --timeout 60 2>/dev/null)
+sleep 2
+PODIUM_CONF="$PODIUM_HOME/slow.conf" "$PODIUM" cancel "$cid" >/dev/null 2>&1
+assert_contains "a cancelled job is settled as cancelled" \
+  "$(PODIUM_CONF="$PODIUM_HOME/slow.conf" "$PODIUM" status "$cid" 2>&1)" "status=cancelled"
+assert_contains "status and the ledger agree that it is unverified" \
+  "$(PODIUM_CONF="$PODIUM_HOME/slow.conf" "$PODIUM" status "$cid" 2>&1)" "verdict=unverified"
+assert_ne "a cancelled job still leaves a receipt" "$(wc -l < "$log" | tr -d ' ')" "$before"
+assert_contains "a cancelled job is never verified" "$(tail -1 "$log")" '"verdict":"unverified"'
+assert_contains "the cancelled receipt keeps the check it was given" "$(tail -1 "$log")" '"check":"true"'
+before=$(wc -l < "$log" | tr -d ' ')
+PODIUM_CONF="$PODIUM_HOME/slow.conf" "$PODIUM" cancel "$cid" >/dev/null 2>&1
+assert_eq "cancelling twice does not fork the ledger" "$(wc -l < "$log" | tr -d ' ')" "$before"
+
 
 echo
 echo "== acceptance checks: the runner verifies, not the bot =="
