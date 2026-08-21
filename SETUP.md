@@ -139,7 +139,7 @@ the install has failed, however healthy everything else looks.
 Finally, start `claude` and confirm the `podium` skill is listed. Ask it to show
 the roster; it should run `podium bots` rather than describe what it would do.
 
-If the desktop console was installed, run `cd desktop && npm test` (51
+If the desktop console was installed, run `cd desktop && npm test` (52
 assertions) and `npm start`, and confirm the Receipts view shows the two jobs
 above with the right verdicts.
 

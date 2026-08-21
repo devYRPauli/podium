@@ -36,7 +36,7 @@ templates/              rendered at install time by SETUP.md. Slots are {{LIKE_T
   podium.conf.tmpl        defines podium_executor() - how a job actually runs
   ORCHESTRATOR.md.tmpl    the chief-of-staff prompt, installed as a Claude Code skill
 desktop/                Electron console. main/preload/renderer split, no Node in the renderer
-test/run.sh             the runner suite - 102 assertions against a stand-in executor
+test/run.sh             the runner suite - 108 assertions against a stand-in executor
 test/ascii.sh           repo hygiene: every tracked file is plain ASCII. CI runs it.
 demo.sh                 thirty-second walkthrough, no auth needed
 ```
@@ -78,6 +78,14 @@ State lives in `$PODIUM_HOME` (default `~/.podium`): `jobs/<id>/`, `log.jsonl`,
   finer), and an executor that ignores the variable silently enforces nothing,
   which is why `doctor` warns about exactly that. A bot with no `tools:` line is
   unrestricted, because tightening that would silently break existing rosters.
+- **`cancel` writes the receipt itself, because it just killed the thing that
+  would have.** `cancelled` is in `is_settled()`, so before this a cancelled job
+  was terminal and completely unrecorded: it ran, and `ledger` and `audit` never
+  knew it existed. `cmd_cancel` now refuses an already-settled job, waits a
+  second in case the worker settled itself in the gap, checks the ledger for the
+  id so the record cannot fork, and writes `verdict=unverified`. It also writes
+  the `verdict` file, because `status` reads that while `ledger` reads the
+  receipt, and the two disagreeing about verification is intolerable here.
 - **`JOB_TOOLS` and `JOB_WRITES` must stay defaulted where the worker reads
   them.** `set -u` is on. A job queued by an older podium has neither in its
   `meta.env`, and a bare reference killed the worker mid-flight: the job stranded
@@ -103,8 +111,8 @@ State lives in `$PODIUM_HOME` (default `~/.podium`): `jobs/<id>/`, `log.jsonl`,
 
 ```sh
 ./test/ascii.sh               # hygiene: plain ASCII everywhere
-./test/run.sh                 # runner:  102 assertions
-cd desktop && npm test        # bridges: 51 assertions
+./test/run.sh                 # runner:  108 assertions
+cd desktop && npm test        # bridges: 52 assertions
 cd desktop && npm run smoke   # the UI:  13 assertions + screenshots (needs xvfb on Linux)
 ./demo.sh                     # see the whole argument in 30 seconds
 ```
@@ -207,8 +215,25 @@ the value is not "parallel tasks". It is *long* parallel tasks, where execution
 dominates supervision, plus tasks you would otherwise never have verified at
 all. Delegating one short task remains a net loss.
 
+**Heavy fan-out measured too.** Four reviewer jobs of 220 to 357 seconds each,
+one per subsystem, in four isolated clones: 1248s of work in 359s of wall clock,
+a 3.5x speedup, no throttling. This is the regime the tool is for. Execution
+dominated supervision by a wide margin, and one brief template covered all four.
+
+**Podium found two of its own bugs, and they were the worst two available.** The
+desktop console dropped every acceptance check before it reached the runner, so
+jobs launched from the UI settled unverified while the caller believed a check
+was set. And cancelling a job left no receipt at all. Two independent reviewers
+reported the first; the second reproduced in one command. A test had pinned the
+console's argument list *without* `--check`, so 51 assertions certified the
+defect. **A test holds a bug in place exactly as firmly as it holds a feature.**
+
 **Not yet earned:** any measurement of this running unattended over hours rather
-than minutes, and a Talk pane that works without Pi.
+than minutes, a Talk pane that works without Pi, and the concurrency ceiling
+above four heavy jobs. The reviewers also raised findings nobody has triaged: no
+timeout on the acceptance check itself, `cancel` trusting a stored pid after
+reuse, `json_escape` leaving control characters unescaped, and `list --json`
+word-splitting paths that contain spaces.
 
 Honest limits, stated in the README rather than hidden: an acceptance check is
 only as good as its author; role boundaries are only as fine as the executor's

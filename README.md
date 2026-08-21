@@ -57,7 +57,7 @@ work is done.** A job is verified only when a shell command the runner ran exite
 zero. Everything else is recorded as unverified, permanently, and is one query
 away. If that distinction does not matter to you, use one of the above.
 
-It is also small on purpose - a few hundred lines of bash and one Pi extension,
+It is also small on purpose - a few hundred lines of bash and one skill file,
 readable in a sitting, with no database, no daemon and no server.
 
 ## What it does
@@ -89,7 +89,7 @@ readable in a sitting, with no database, no daemon and no server.
 
 v0, honestly labelled:
 
-- **Runner: complete and tested.** 92 assertions, including a live check that a
+- **Runner: complete and tested.** 108 assertions, including a live check that a
   detached worker's parent pid becomes 1 after its launching shell exits, that a
   failed acceptance check rejects a job whose executor exited 0, and that editing
   or deleting a receipt is detected.
@@ -99,13 +99,22 @@ v0, honestly labelled:
 - **Claude Code skill: complete.** The Pi extension is gone. Claude Code needs no
   extension. `templates/ORCHESTRATOR.md.tmpl` teaches it to run `podium` with the
   Bash tool it already has.
-- **Live model: six jobs.** On 2026-08-21, Podium ran six real jobs through
-  Codex. Four reached `verified`, and two of those changed this repository.
-  Two reached `rejected / failed_check` with `exit_code=0`; the runner overrode
-  a clean executor exit both times. A detached worker's parent pid was 1. The
-  receipt chain stayed intact across all six.
+- **Live model: 19 jobs.** On 2026-08-21, Podium ran 19 real jobs through Codex.
+  17 reached `verified`, and four of those changed this repository. Two reached
+  `rejected / failed_check` with `exit_code=0`; the runner overrode a clean
+  executor exit both times. A detached worker's parent pid was 1. The receipt
+  chain stayed intact across all 19.
+- **Fan-out measured, twice.** Four light jobs: 93s in sequence against 22s at
+  once. Four heavy jobs of 220 to 357 seconds each: 1248s of work in 359s of
+  wall clock, a 3.5x speedup. No throttling in either round. The ceiling above
+  four concurrent jobs is untested, because finding it costs real quota.
 - **Executor preflight: three failures separated.** `podium doctor --executor`
   distinguishes a bad flag, a missing login, and a read-only sandbox.
+- **It found two of its own bugs.** The four heavy jobs were reviewers, one per
+  subsystem. They reported that the desktop console dropped every acceptance
+  check before it reached the runner, and that cancelling a job left no receipt
+  at all. Both were real, both are fixed, and both broke the one rule this
+  project has.
 
 ## Requirements
 
@@ -206,26 +215,25 @@ with write access to the whole directory. If you need the stronger property,
 cd desktop && npm install && npm start
 ```
 
-Three views: **Talk** to the orchestrator, the **Roster** of bots and their
-memory, and **Receipts** - every settled job with the check that ran and the
-verdict it produced. Delegated jobs appear live on the right with their verdict
-badge.
+It opens on **Receipts**: every settled job with the check that ran and the
+verdict it produced. **Roster** shows the bots and their memory. Delegated jobs
+appear live on the right with their verdict badge.
 
-**Talk needs a harness that speaks Pi's RPC protocol, and it is the last part of
-this project that does.** It drives `pi --mode rpc` by default; point it at
-another binary with the `piBin` setting. Without one, Talk reports what is
-missing and the other two views work normally, because they read the ledger
-straight off disk. If Claude Code is your orchestrator, your terminal already is
-the Talk pane, and the console is a receipts viewer.
+The third view, **Talk**, needs a harness that speaks Pi's RPC protocol, and it
+is the last part of this project that does. It drives `pi --mode rpc`; point it
+at another binary with the `piBin` setting. Without one it says so plainly, and
+the other two views work normally, because they read the ledger straight off
+disk. If Claude Code is your orchestrator, your terminal already is the Talk
+pane.
 
-The receipts are why it exists.
+The receipts are why the console exists.
 
 ## Tests
 
 ```sh
 ./test/ascii.sh               # hygiene: every tracked file is plain ASCII
-./test/run.sh                 # runner:  102 assertions
-cd desktop && npm test        # bridges: 51 assertions
+./test/run.sh                 # runner:  108 assertions
+cd desktop && npm test        # bridges: 52 assertions
 cd desktop && npm run smoke   # the UI:  13 assertions + screenshots
 ```
 
