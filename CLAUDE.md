@@ -191,10 +191,21 @@ Four things that run taught us, all worth keeping:
   test builds a fresh job and none simulated a migration. The check tested the
   feature; nobody had asked what the change did to work already in flight.
 
-The honest note on cost: writing the brief and an independent check took longer
-than either task took to run. Delegating one short task is a net loss. The value
-is in long tasks, parallel tasks, and tasks you would otherwise never have
-verified at all.
+**Fan-out measured, same day.** The same four jobs ran once in sequence and once
+at once: 93s against 22s, a 4x speedup over 4 jobs, zero `rate_limited`, all
+eight verified. Concurrency works and four-way fan-out is not throttled. Two
+limits on that number: the parallel jobs happened to be individually faster
+(17s average against 22s), which is latency variance rather than a real
+superlinear effect, and every job was tiny. Four concurrent jobs the weight of
+the 872-second one are untested, and finding that ceiling costs real quota.
+
+The honest note on cost, and the fan-out number sharpens it rather than
+softening it: writing the brief and an independent check took longer than either
+task took to run. **Parallelism amortizes the waiting, not the supervision.**
+Four jobs at once still cost four briefs and four checks to save 71 seconds. So
+the value is not "parallel tasks". It is *long* parallel tasks, where execution
+dominates supervision, plus tasks you would otherwise never have verified at
+all. Delegating one short task remains a net loss.
 
 **Not yet earned:** any measurement of this running unattended over hours rather
 than minutes, and a Talk pane that works without Pi.
