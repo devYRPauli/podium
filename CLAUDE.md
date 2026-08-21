@@ -16,13 +16,19 @@ recorded in `--check` was executed by `bin/podium` and exited 0.
 Every change must preserve this. If a change would let a model's own report
 influence the verdict, it is the wrong change.
 
-Three verdicts, deliberately not collapsible:
+Four verdicts, deliberately not collapsible:
 
 | verdict | means |
 |---|---|
 | `verified` | a check ran and exited 0 |
 | `failed_check` | a check ran and failed - job status becomes `rejected` |
+| `check_timeout` | the check itself hung past `PODIUM_CHECK_TIMEOUT` and was stopped - status becomes `rejected` |
 | `unverified` | no check passed; nothing confirms the work |
+
+Adding a verdict means checking three places, not one: nothing may map it to
+`verified`, `ledger --unverified` must surface it, and the console renders from
+`status` plus the `verified` boolean rather than the verdict string, so a new
+verdict must set `"verified":false` in the receipt to display honestly.
 
 `unverified` is never a soft pass. A job that finished cleanly with no check
 stays unverified forever and surfaces under `podium ledger --unverified`.
@@ -36,7 +42,7 @@ templates/              rendered at install time by docs/SETUP.md. Slots are {{L
   podium.conf.tmpl        defines podium_executor() - how a job actually runs
   ORCHESTRATOR.md.tmpl    the chief-of-staff prompt, installed as a Claude Code skill
 desktop/                Electron console. main/preload/renderer split, no Node in the renderer
-test/run.sh             the runner suite - 108 assertions against a stand-in executor
+test/run.sh             the runner suite - 126 assertions against a stand-in executor
 test/ascii.sh           repo hygiene: every tracked file is plain ASCII. CI runs it.
 demo.sh                 thirty-second walkthrough, no auth needed
 ```
@@ -111,7 +117,7 @@ State lives in `$PODIUM_HOME` (default `~/.podium`): `jobs/<id>/`, `log.jsonl`,
 
 ```sh
 ./test/ascii.sh               # hygiene: plain ASCII everywhere
-./test/run.sh                 # runner:  108 assertions
+./test/run.sh                 # runner:  126 assertions
 cd desktop && npm test        # bridges: 52 assertions
 cd desktop && npm run smoke   # the UI:  13 assertions + screenshots (needs xvfb on Linux)
 ./demo.sh                     # see the whole argument in 30 seconds
@@ -228,12 +234,24 @@ reported the first; the second reproduced in one command. A test had pinned the
 console's argument list *without* `--check`, so 51 assertions certified the
 defect. **A test holds a bug in place exactly as firmly as it holds a feature.**
 
+**All five reviewer findings are fixed**, and every one of them was a way for a
+job to run and leave no honest record:
+
+- The acceptance check had no timeout of its own. A check that blocked left the
+  job in `running` forever. `PODIUM_CHECK_TIMEOUT` bounds it, and a check that
+  is stopped settles as `rejected` with the verdict `check_timeout`.
+- `cancel` signalled a stored pid without checking it still belonged to this
+  worker, so after pid reuse it could kill an unrelated process.
+- `json_escape` passed C0 control characters through raw, producing JSON no
+  conforming parser would read. All four JSON paths are covered by one test now.
+- `list --json` word-split job paths, so a `PODIUM_HOME` containing a space
+  silently returned an incomplete array while plain `list` was correct.
+- A worker killed outright stranded the job in `running`. Reading `status` or
+  `list` now reaps it as `failed / unverified` and writes the receipt.
+
 **Not yet earned:** any measurement of this running unattended over hours rather
 than minutes, a Talk pane that works without Pi, and the concurrency ceiling
-above four heavy jobs. The reviewers also raised findings nobody has triaged: no
-timeout on the acceptance check itself, `cancel` trusting a stored pid after
-reuse, `json_escape` leaving control characters unescaped, and `list --json`
-word-splitting paths that contain spaces.
+above four heavy jobs.
 
 Honest limits, stated in the README rather than hidden: an acceptance check is
 only as good as its author; role boundaries are only as fine as the executor's

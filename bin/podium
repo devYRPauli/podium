@@ -13,7 +13,7 @@ PODIUM_VERSION="0.1.0"
 # already-exported name overwrites the exported value too - so capturing later
 # would read back the default, not what the caller set.
 _PODIUM_ENV_OVERRIDES=""
-for _v in PODIUM_TIMEOUT PODIUM_REQUIRE_CHECK PODIUM_RATELIMIT_RE PODIUM_EXECUTOR_CLI \
+for _v in PODIUM_TIMEOUT PODIUM_CHECK_TIMEOUT PODIUM_REQUIRE_CHECK PODIUM_RATELIMIT_RE PODIUM_EXECUTOR_CLI \
           PODIUM_DEFAULT_MODEL PODIUM_BOTS_DIR PODIUM_JOBS_DIR PODIUM_LOG; do
   if env | grep -q "^${_v}="; then
     _PODIUM_ENV_OVERRIDES="${_PODIUM_ENV_OVERRIDES} ${_v}=$(printf '%q' "$(eval "printf '%s' \"\$$_v\"")")"
@@ -25,6 +25,7 @@ PODIUM_CONF="${PODIUM_CONF:-$PODIUM_HOME/podium.conf}"
 
 # --- defaults, overridden by podium.conf ------------------------------------
 PODIUM_TIMEOUT=1800
+PODIUM_CHECK_TIMEOUT=300
 PODIUM_BOTS_DIR="$PODIUM_HOME/bots"
 PODIUM_JOBS_DIR="$PODIUM_HOME/jobs"
 PODIUM_LOG="$PODIUM_HOME/log.jsonl"
@@ -81,6 +82,7 @@ GENESIS_HASH="0000000000000000000000000000000000000000000000000000000000000000"
 # every POSIX filesystem, so it is the lock.
 append_receipt() {
   local line_body=$1
+  local job_id=${2:-}
   local lock="${PODIUM_LOG}.lock"
   local waited=0
   while ! mkdir "$lock" 2>/dev/null; do
@@ -93,6 +95,13 @@ append_receipt() {
   done
   # shellcheck disable=SC2064
   trap "rmdir '$lock' 2>/dev/null" EXIT
+
+  if [ -n "$job_id" ] && [ -s "$PODIUM_LOG" ] &&
+     grep -Fq "\"id\":\"$(json_escape "$job_id")\"" "$PODIUM_LOG" 2>/dev/null; then
+    rmdir "$lock" 2>/dev/null
+    trap - EXIT
+    return 0
+  fi
 
   local prev="$GENESIS_HASH"
   if [ -s "$PODIUM_LOG" ]; then
@@ -113,12 +122,49 @@ append_receipt() {
 
 json_escape() {
   # Escape a string for embedding in JSON. Handles backslash, quote, control chars.
-  local s=${1//\\/\\\\}
-  s=${s//\"/\\\"}
-  s=${s//$'\n'/\\n}
-  s=${s//$'\r'/\\r}
-  s=${s//$'\t'/\\t}
-  printf '%s' "$s"
+  printf '%s' "$1" | LC_ALL=C od -An -v -tx1 | LC_ALL=C awk '
+    {
+      for (i = 1; i <= NF; i++) {
+        n = (index("0123456789abcdef", substr($i, 1, 1)) - 1) * 16
+        n += index("0123456789abcdef", substr($i, 2, 1)) - 1
+        if (n < 32) printf "\\u00%s", toupper($i)
+        else if (n == 34) printf "\\\""
+        else if (n == 92) printf "\\\\"
+        else printf "%c", n
+      }
+    }
+  '
+}
+
+settle_dead_worker() {
+  local jd=$1 status=$2
+  [ "$status" = "running" ] || return 0
+  local pid; pid=$(cat "$jd/pid" 2>/dev/null || echo "")
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
+
+  # shellcheck disable=SC1091
+  . "$jd/meta.env"
+  echo failed > "$jd/status"
+  echo unverified > "$jd/verdict"
+
+  if [ -s "$PODIUM_LOG" ] && grep -Fq "\"id\":\"$(json_escape "$JOB_ID")\"" "$PODIUM_LOG" 2>/dev/null; then
+    return 0
+  fi
+
+  local started dur=0
+  started=$(cat "$jd/started" 2>/dev/null || echo "")
+  [ -n "$started" ] && dur=$(( $(date +%s) - started ))
+  echo "$dur" > "$jd/duration"
+  mkdir -p "$(dirname "$PODIUM_LOG")"
+  append_receipt "$(printf '{"ts":"%s","id":"%s","bot":"%s","model":"%s","status":"failed","exit_code":null,"duration_secs":%s,"timed_out":false,"verdict":"unverified","verified":false,"check":"%s","check_exit":null,"check_timed_out":false,"cwd":"%s","writes":%s}' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$(json_escape "$JOB_ID")" \
+    "$(json_escape "$JOB_BOT")" \
+    "$(json_escape "${JOB_MODEL:-}")" \
+    "$dur" \
+    "$(json_escape "${JOB_CHECK:-}")" \
+    "$(json_escape "$JOB_CWD")" \
+    "${JOB_WRITES:-1}")" "$JOB_ID"
 }
 
 new_job_id() {
@@ -220,16 +266,34 @@ cmd_worker() {
 
   # --- acceptance check -----------------------------------------------------
   # The runner runs it, not the model. A bot cannot mark its own work verified.
-  local verdict=unverified check_exit=null
+  local verdict=unverified check_exit=null check_timed_out=0
   if [ -n "${JOB_CHECK:-}" ]; then
     if [ "$status" = "done" ]; then
       printf '%s\n' "$JOB_CHECK" > "$jd/check.cmd"
-      ( cd "$JOB_CWD" && eval "$JOB_CHECK" ) > "$jd/check.txt" 2>&1
-      check_exit=$?
-      echo "$check_exit" > "$jd/check_exit"
-      if [ "$check_exit" -eq 0 ]; then
+      ( cd "$JOB_CWD" && eval "$JOB_CHECK" ) > "$jd/check.txt" 2>&1 &
+      local check_pid=$! check_started; check_started=$(date +%s)
+      while kill -0 "$check_pid" 2>/dev/null; do
+        sleep 1
+        if [ $(( $(date +%s) - check_started )) -ge "$PODIUM_CHECK_TIMEOUT" ]; then
+          check_timed_out=1
+          kill -TERM "$check_pid" 2>/dev/null
+          sleep 2
+          kill -KILL "$check_pid" 2>/dev/null
+          break
+        fi
+      done
+      wait "$check_pid" 2>/dev/null
+      local check_code=$?
+      if [ "$check_timed_out" -eq 1 ]; then
+        verdict=check_timeout
+        status=rejected
+      elif [ "$check_code" -eq 0 ]; then
+        check_exit=$check_code
+        echo "$check_exit" > "$jd/check_exit"
         verdict=verified
       else
+        check_exit=$check_code
+        echo "$check_exit" > "$jd/check_exit"
         verdict=failed_check
         status=rejected
       fi
@@ -242,7 +306,7 @@ cmd_worker() {
 
   mkdir -p "$(dirname "$PODIUM_LOG")"
   local receipt
-  receipt=$(printf '{"ts":"%s","id":"%s","bot":"%s","model":"%s","status":"%s","exit_code":%s,"duration_secs":%s,"timed_out":%s,"verdict":"%s","verified":%s,"check":"%s","check_exit":%s,"cwd":"%s","writes":%s}' \
+  receipt=$(printf '{"ts":"%s","id":"%s","bot":"%s","model":"%s","status":"%s","exit_code":%s,"duration_secs":%s,"timed_out":%s,"verdict":"%s","verified":%s,"check":"%s","check_exit":%s,"check_timed_out":%s,"cwd":"%s","writes":%s}' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     "$(json_escape "$JOB_ID")" \
     "$(json_escape "$JOB_BOT")" \
@@ -253,9 +317,10 @@ cmd_worker() {
     "$( [ "$verdict" = "verified" ] && echo true || echo false )" \
     "$(json_escape "${JOB_CHECK:-}")" \
     "$check_exit" \
+    "$( [ "$check_timed_out" -eq 1 ] && echo true || echo false )" \
     "$(json_escape "$JOB_CWD")" \
     "${JOB_WRITES:-1}")
-  append_receipt "$receipt"
+  append_receipt "$receipt" "$JOB_ID"
 }
 
 # --- run --------------------------------------------------------------------
@@ -356,7 +421,7 @@ cmd_run() {
       sleep 1
       waited=$((waited+1))
       # Never outlast the job itself, plus slack for the acceptance check.
-      if [ "$waited" -gt $(( timeout + 30 )) ]; then
+      if [ "$waited" -gt $(( timeout + PODIUM_CHECK_TIMEOUT + 30 )) ]; then
         echo "podium: --wait gave up after ${waited}s (job $id is $cur)" >&2
         break
       fi
@@ -380,6 +445,8 @@ cmd_status() {
   # shellcheck disable=SC1091
   . "$jd/meta.env"
   local status; status=$(cat "$jd/status" 2>/dev/null || echo unknown)
+  settle_dead_worker "$jd" "$status"
+  status=$(cat "$jd/status" 2>/dev/null || echo unknown)
   local code;   code=$(cat "$jd/exit_code" 2>/dev/null || echo -)
   local dur;    dur=$(cat "$jd/duration" 2>/dev/null || echo -)
 
@@ -708,10 +775,12 @@ cmd_list() {
     local first=1
     printf '['
     local jd id
-    for jd in $(ls -d "$PODIUM_JOBS_DIR"/*/ 2>/dev/null | sort -r); do
+    for jd in "$PODIUM_JOBS_DIR"/*/; do
       [ -f "$jd/meta.env" ] || continue
       id=$(basename "$jd")
       local status; status=$(cat "$jd/status" 2>/dev/null || echo unknown)
+      settle_dead_worker "$jd" "$status"
+      status=$(cat "$jd/status" 2>/dev/null || echo unknown)
       local bot; bot=$(grep -m1 '^JOB_BOT=' "$jd/meta.env" | cut -d= -f2- | tr -d "'\"")
       [ -n "$filter_bot" ] && [ "$bot" != "$filter_bot" ] && continue
       [ -n "$filter_status" ] && [ "$status" != "$filter_status" ] && continue
@@ -728,6 +797,8 @@ cmd_list() {
     [ -f "$jd/meta.env" ] || continue
     id=$(basename "$jd")
     bot=$(grep -m1 '^JOB_BOT=' "$jd/meta.env" | cut -d= -f2- | tr -d "'\"")
+    status=$(cat "$jd/status" 2>/dev/null || echo unknown)
+    settle_dead_worker "$jd" "$status"
     status=$(cat "$jd/status" 2>/dev/null || echo unknown)
     [ -n "$filter_bot" ] && [ "$bot" != "$filter_bot" ] && continue
     [ -n "$filter_status" ] && [ "$status" != "$filter_status" ] && continue
@@ -758,8 +829,11 @@ cmd_cancel() {
   # shellcheck disable=SC1091
   . "$jd/meta.env"
 
-  local pid; pid=$(cat "$jd/pid" 2>/dev/null || echo "")
-  [ -n "$pid" ] && kill -TERM "-$pid" 2>/dev/null; kill -TERM "$pid" 2>/dev/null
+  local pid process=""; pid=$(cat "$jd/pid" 2>/dev/null || echo "")
+  [ -n "$pid" ] && process=$(ps -ww -p "$pid" -o command= 2>/dev/null || echo "")
+  case "$process" in
+    *"__worker"*"$jd"*) kill -TERM "-$pid" 2>/dev/null; kill -TERM "$pid" 2>/dev/null ;;
+  esac
   echo cancelled > "$jd/status"
   # `status` reads this file and the ledger reads the receipt. They must agree,
   # or the tool disagrees with its own record about whether work was verified.
@@ -782,7 +856,7 @@ cmd_cancel() {
   started=$(cat "$jd/started" 2>/dev/null || echo "")
   [ -n "$started" ] && dur=$(( $(date +%s) - started ))
   mkdir -p "$(dirname "$PODIUM_LOG")"
-  append_receipt "$(printf '{"ts":"%s","id":"%s","bot":"%s","model":"%s","status":"cancelled","exit_code":null,"duration_secs":%s,"timed_out":false,"verdict":"unverified","verified":false,"check":"%s","check_exit":null,"cwd":"%s","writes":%s}' \
+  append_receipt "$(printf '{"ts":"%s","id":"%s","bot":"%s","model":"%s","status":"cancelled","exit_code":null,"duration_secs":%s,"timed_out":false,"verdict":"unverified","verified":false,"check":"%s","check_exit":null,"check_timed_out":false,"cwd":"%s","writes":%s}' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     "$(json_escape "$JOB_ID")" \
     "$(json_escape "$JOB_BOT")" \
@@ -790,7 +864,7 @@ cmd_cancel() {
     "$dur" \
     "$(json_escape "${JOB_CHECK:-}")" \
     "$(json_escape "$JOB_CWD")" \
-    "${JOB_WRITES:-1}")"
+    "${JOB_WRITES:-1}")" "$JOB_ID"
   echo "cancelled $id"
 }
 

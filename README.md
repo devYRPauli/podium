@@ -23,15 +23,16 @@ Look at the third row. That job ran to completion, exited cleanly, and reported
 success. No check ever ran, so nothing confirms it did anything at all. It stays
 on that list forever.
 
-Three verdicts, and they never collapse into each other:
+Four verdicts, and they never collapse into each other:
 
 | verdict | means |
 |---|---|
 | `verified` | a check ran and exited 0 |
 | `failed_check` | a check ran and failed, so the job is rejected whatever the bot claimed |
+| `check_timeout` | the check itself hung and was stopped, so it never passed |
 | `unverified` | no check passed, so nothing confirms the work |
 
-`unverified` is never a soft pass.
+Only the first is a pass. `unverified` is never a soft one.
 
 ## See it work first
 
@@ -198,7 +199,7 @@ The receipts are why the console exists.
 
 v0, honestly labelled:
 
-- **Runner: complete and tested.** 108 assertions, including a live check that a
+- **Runner: complete and tested.** 126 assertions, including a live check that a
   detached worker's parent pid becomes 1 after its launching shell exits, that a
   failed acceptance check rejects a job whose executor exited 0, and that editing
   or deleting a receipt is detected.
@@ -276,7 +277,7 @@ readable in a sitting, with no database, no daemon and no server.
 
 ```sh
 ./test/ascii.sh               # hygiene: every tracked file is plain ASCII
-./test/run.sh                 # runner:  108 assertions
+./test/run.sh                 # runner:  126 assertions
 cd desktop && npm test        # bridges: 52 assertions
 cd desktop && npm run smoke   # the UI:  13 assertions + screenshots
 ```

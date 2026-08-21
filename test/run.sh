@@ -16,6 +16,7 @@ mkdir -p "$PODIUM_HOME/bots/tester"
 cat > "$PODIUM_CONF" <<CONF
 podium_executor() { "$ROOT/test/fixtures/fake-executor" "\$1" "\$2" "\$3" "\$4" "\$5"; local code=\$?; printf 'PODIUM_BOT_WRITES=%s\n' "\$PODIUM_BOT_WRITES" >> "\$3"; return "\$code"; }
 PODIUM_TIMEOUT=1800
+PODIUM_CHECK_TIMEOUT=300
 PODIUM_BOTS_DIR="$PODIUM_HOME/bots"
 PODIUM_JOBS_DIR="$PODIUM_HOME/jobs"
 PODIUM_LOG="$PODIUM_HOME/log.jsonl"
@@ -150,6 +151,35 @@ d=json.load(sys.stdin)
 print('parsed', 'quoted' in d['brief'], '\n' in d['brief'])
 " 2>&1)
   assert_eq "JSON survives quotes, newlines and backslashes" "$hostile" "parsed True True"
+
+  control_check=$(printf 'true # \f')
+  control_brief=$(printf 'control \001\f chars')
+  control_id=$("$PODIUM" run tester "$control_brief" --check "$control_check" --wait 2>/dev/null)
+  control_json=$(
+    { "$PODIUM" status --json "$control_id"; "$PODIUM" show "$control_id"; "$PODIUM" list --json; "$PODIUM" ledger --json --limit 100; } |
+      python3 -c "
+import json,sys
+status=json.loads(sys.stdin.readline())
+show=json.loads(sys.stdin.readline())
+listed=json.loads(sys.stdin.readline())
+ledger=json.loads(sys.stdin.readline())
+print('status', '\f' in status['check'], 'show', '\x01' in show['brief'] and '\f' in show['brief'], 'list', any(r['id']=='$control_id' for r in listed), 'ledger', any(r['id']=='$control_id' for r in ledger))
+" 2>&1)
+  assert_eq "every JSON path escapes C0 control characters" "$control_json" "status True show True list True ledger True"
+
+  space_jobs="$PODIUM_HOME/jobs with space"
+  cat > "$PODIUM_HOME/space.conf" <<SPACE
+podium_executor() { "$ROOT/test/fixtures/fake-executor" "\$1" "\$2" "\$3" "\$4" "\$5"; local code=\$?; printf 'PODIUM_BOT_WRITES=%s\n' "\$PODIUM_BOT_WRITES" >> "\$3"; return "\$code"; }
+PODIUM_BOTS_DIR="$PODIUM_HOME/bots"
+PODIUM_JOBS_DIR="$space_jobs"
+PODIUM_LOG="$PODIUM_HOME/space-log.jsonl"
+SPACE
+  space_id=$(PODIUM_CONF="$PODIUM_HOME/space.conf" "$PODIUM" run tester "space path" --wait 2>/dev/null)
+  plain_count=$(PODIUM_CONF="$PODIUM_HOME/space.conf" "$PODIUM" list | wc -l | tr -d ' ')
+  json_count=$(PODIUM_CONF="$PODIUM_HOME/space.conf" "$PODIUM" list --json | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>&1)
+  assert_eq "plain list sees the job under a path with spaces" "$plain_count" "1"
+  assert_eq "list --json agrees under a path with spaces" "$json_count" "$plain_count"
+  assert_contains "list --json keeps the complete spaced-path job" "$(PODIUM_CONF="$PODIUM_HOME/space.conf" "$PODIUM" list --json)" "$space_id"
 fi
 
 assert_contains "brief returns the brief verbatim" "$("$PODIUM" brief "$jid")" "json shape check"
@@ -245,6 +275,35 @@ before=$(wc -l < "$log" | tr -d ' ')
 PODIUM_CONF="$PODIUM_HOME/slow.conf" "$PODIUM" cancel "$cid" >/dev/null 2>&1
 assert_eq "cancelling twice does not fork the ledger" "$(wc -l < "$log" | tr -d ' ')" "$before"
 
+# A stale pid file must never turn cancellation into a signal sent to an
+# unrelated process after pid reuse. Cancellation still settles and records it.
+foreign_id=foreign-pid
+foreign_jd="$PODIUM_HOME/jobs/$foreign_id"
+mkdir -p "$foreign_jd"
+sleep 30 & foreign_pid=$!
+cat > "$foreign_jd/meta.env" <<META
+JOB_ID=$foreign_id
+JOB_BOT=writer
+JOB_MODEL=
+JOB_CWD=$PODIUM_HOME
+JOB_TIMEOUT=60
+JOB_WS=$PODIUM_HOME/bots/writer/workspace
+JOB_CHECK=true
+JOB_WRITES=1
+META
+printf '%s\n' "$foreign_pid" > "$foreign_jd/pid"
+date +%s > "$foreign_jd/started"
+echo running > "$foreign_jd/status"
+: > "$foreign_jd/out.txt"
+before=$(wc -l < "$log" | tr -d ' ')
+"$PODIUM" cancel "$foreign_id" >/dev/null 2>&1
+alive=$(kill -0 "$foreign_pid" 2>/dev/null && echo yes || echo no)
+assert_eq "cancel does not signal a pid owned by another process" "$alive" "yes"
+kill "$foreign_pid" 2>/dev/null
+wait "$foreign_pid" 2>/dev/null
+assert_contains "stale-pid cancellation still settles" "$("$PODIUM" status "$foreign_id")" "status=cancelled"
+assert_eq "stale-pid cancellation still writes one receipt" "$(( $(wc -l < "$log" | tr -d ' ') - before ))" "1"
+
 
 echo
 echo "== acceptance checks: the runner verifies, not the bot =="
@@ -266,6 +325,58 @@ assert_contains "a rejected job still records exit_code 0" "$("$PODIUM" status "
 nid=$("$PODIUM" run tester "FAKE_FAIL with a check" --check "true" --wait 2>/dev/null)
 assert_contains "check does not run when the bot failed" "$("$PODIUM" status "$nid")" "verdict=not_run"
 assert_contains "failed bot still reports failed" "$("$PODIUM" status "$nid")" "status=failed"
+
+cat > "$PODIUM_HOME/check-timeout.conf" <<CHECK_TIMEOUT
+podium_executor() { "$ROOT/test/fixtures/fake-executor" "\$1" "\$2" "\$3" "\$4" "\$5"; local code=\$?; printf 'PODIUM_BOT_WRITES=%s\n' "\$PODIUM_BOT_WRITES" >> "\$3"; return "\$code"; }
+PODIUM_CHECK_TIMEOUT=1
+PODIUM_BOTS_DIR="$PODIUM_HOME/bots"
+PODIUM_JOBS_DIR="$PODIUM_HOME/jobs"
+PODIUM_LOG="$log"
+CHECK_TIMEOUT
+ctid=$(PODIUM_CONF="$PODIUM_HOME/check-timeout.conf" "$PODIUM" run tester "blocking check" --check "sleep 20" --wait 2>/dev/null)
+assert_contains "a timed-out check settles the job" "$("$PODIUM" status "$ctid")" "status=rejected"
+assert_contains "a timed-out check is distinguishable from failure" "$("$PODIUM" status "$ctid")" "verdict=check_timeout"
+ctreceipt=$(grep -F "\"id\":\"$ctid\"" "$log")
+assert_contains "a check timeout is recorded in the receipt" "$ctreceipt" '"check_timed_out":true'
+assert_contains "a timed-out check is never verified" "$ctreceipt" '"verified":false'
+
+echo
+echo "== dead workers settle when status is read =="
+make_dead_job() {
+  local dead_id=$1 dead_jd="$PODIUM_HOME/jobs/$1"
+  mkdir -p "$dead_jd"
+  sleep 0.1 & local dead_pid=$!
+  wait "$dead_pid"
+  cat > "$dead_jd/meta.env" <<META
+JOB_ID=$dead_id
+JOB_BOT=tester
+JOB_MODEL=test-model-1
+JOB_CWD=$PODIUM_HOME
+JOB_TIMEOUT=60
+JOB_WS=$PODIUM_HOME/bots/tester/workspace
+JOB_CHECK=true
+JOB_WRITES=0
+META
+  printf '%s\n' "$dead_pid" > "$dead_jd/pid"
+  date +%s > "$dead_jd/started"
+  echo running > "$dead_jd/status"
+  : > "$dead_jd/out.txt"
+}
+
+make_dead_job dead-status
+before=$(wc -l < "$log" | tr -d ' ')
+assert_contains "status settles a running job whose worker died" "$("$PODIUM" status dead-status)" "status=failed"
+assert_contains "a dead worker is unverified" "$("$PODIUM" status dead-status)" "verdict=unverified"
+assert_eq "status writes one receipt for a dead worker" "$(( $(wc -l < "$log" | tr -d ' ') - before ))" "1"
+"$PODIUM" status dead-status >/dev/null
+assert_eq "re-reading dead-worker status does not fork the ledger" "$(( $(wc -l < "$log" | tr -d ' ') - before ))" "1"
+
+make_dead_job dead-list
+before=$(wc -l < "$log" | tr -d ' ')
+assert_contains "list settles a running job whose worker died" "$("$PODIUM" list)" "dead-list tester failed"
+assert_eq "list writes one receipt for a dead worker" "$(( $(wc -l < "$log" | tr -d ' ') - before ))" "1"
+"$PODIUM" list >/dev/null
+assert_eq "re-listing a dead worker does not fork the ledger" "$(( $(wc -l < "$log" | tr -d ' ') - before ))" "1"
 
 echo
 echo "== the check runs in the job's cwd, and is recorded verbatim =="
