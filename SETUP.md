@@ -83,7 +83,8 @@ export PODIUM_HOME=<PODIUM_HOME>
 P="$PODIUM_HOME/bin/podium"
 
 "$P" doctor              # every requirement, checked
-"$P" doctor --executor   # actually invoke the executor - catches a wrong flag
+"$P" doctor --executor   # invoke it for real - catches a wrong flag and a
+                         # read-only sandbox, which look identical in a log
 "$P" bots                # the roster
 
 # 1. A job that should VERIFY. The check is real: it fails if the file is absent.
@@ -116,9 +117,12 @@ sleep 5; "$P" status "$bad"
 The install is successful when **all** of these hold:
 
 - `doctor` reports `ready.`
-- `doctor --executor` reports `ok` or `WARN ... not authenticated`. If it says
-  the executor rejected its own arguments, `podium.conf` is wrong and no job
-  will ever run - fix that before going further
+- `doctor --executor` reports `ok` or `WARN ... not authenticated`. Two other
+  outcomes both mean `podium.conf` is wrong and no job will ever run. Fix either
+  one before going further:
+  - "rejected its own arguments" - the executor was given a flag it does not have
+  - "could not write a file" - the executor runs in a read-only sandbox, so any
+    bot asked to write anything will fail its acceptance check
 - the parent pid printed in step 2 is `1` - if it is not, the job did not detach
 - job 1 reaches `status=done verdict=verified`
 - job 4 reaches `status=rejected verdict=failed_check`, **even though the bot

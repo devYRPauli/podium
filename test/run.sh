@@ -344,6 +344,11 @@ assert_contains "an auth failure is NOT called a config bug" "$out" "not authent
 case "$out" in *"podium.conf is wrong"*) bad "auth failure is not blamed on the config" ;; *) ok "auth failure is not blamed on the config" ;; esac
 
 out=$(probe_conf 'printf "OK\n" > "$3"; return 0;')
+code=$?
+assert_contains "an executor without write access is reported" "$out" "write"
+assert_ne "an executor without write access fails the probe" "$code" "0"
+
+out=$(probe_conf 'printf "PODIUM_WRITE_OK\n" > "$2/write-probe.txt"; printf "OK\n" > "$3"; return 0;')
 assert_contains "a working executor is reported working" "$out" "ran and returned output"
 
 out=$(probe_conf 'sleep 30 > "$3";')
