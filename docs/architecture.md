@@ -7,11 +7,31 @@ bots, on subscriptions you already pay for, with the work auditable afterwards.
 
 These are the expensive-to-reverse ones. Everything else follows from them.
 
+> **Decision 1 was reversed on 2026-08-21.** The record below stays as written,
+> because the reasoning was sound and the reversal is the interesting part. Read
+> the note under it before you act on it.
+
 **1. Pi is the harness, not Claude Code.** Not because Claude Code is worse at
 coding - because Pi is a harness and Claude Code is a product. Pi exposes the
 agent loop, the provider layer and the session store as primitives, ships OAuth
 for seven subscription providers, and has an extension API that can register
-tools rather than only hooks. See `research.md` §4.
+tools rather than only hooks. See `research.md` section 4.
+
+**Reversed.** Claude Code is the harness. Three things falsified the decision:
+
+- The decision was never expensive. `podium_executor()` takes five arguments and
+  maps them onto any CLI, so the harness was always one function body. The cost
+  of reversal was a config file, not a rewrite.
+- The extension was not needed. Pi needed 243 lines of TypeScript to learn the
+  tools. Claude Code runs `podium` with the Bash tool it already has. A skill
+  teaches the loop. The extension was deleted, not ported.
+- Pi was never installed on the machine this was built for. The harness argued
+  for over a page of prose had not been run once, while two authenticated CLIs
+  sat idle. That is the failure this project exists to catch, committed by the
+  project itself.
+
+What survives is the part that mattered: the runner does not care which harness
+orchestrates it or which executor does the work.
 
 **2. Durability is a property, not a hope.** A background job whose lifetime is
 tied to the agent session is not durable, which is the lesson Baton already paid
@@ -33,7 +53,7 @@ earlier, weaker one, and it is the reason the project is worth building at all.
 The first draft put "verify before reporting done" in the chief-of-staff system
 prompt. That fails this project's own standard. A prompt is an aspiration a model
 may drop under context pressure, it produces nothing observable, and any of the
-five competitors in `research.md` §4b could paste the same paragraph tomorrow.
+five competitors in `research.md` section 4b could paste the same paragraph tomorrow.
 Judged by "find the observable version of your claim and check it", it was not a
 differentiator - it was a rationalisation.
 
@@ -89,13 +109,13 @@ removes the entire class of problem.
 ## The layers
 
 ```
-   you ──► orchestrator ──► podium ──► detached job ──► executor ──► bot
-           (chief of staff)   (runner)                  (subscription)
-              │                  │
-              │                  ├── jobs/<id>/  brief, system prompt, output, meta
-              │                  └── log.jsonl   one line per settled job
-              │
-              └── tools: roster · delegate · check · collect · remember
+   you --> Claude Code --> podium --> detached job --> executor --> bot
+           (chief of staff)  (runner)                  (subscription)
+              |                 |
+              |                 +-- jobs/<id>/  brief, system prompt, output, meta
+              |                 `-- log.jsonl   one line per settled job
+              |
+              `-- podium bots | run --check | status | result | ledger
 ```
 
 **Layer 0 - Harness.** Pi. `/login` against Codex, Copilot, xAI or a flat-rate
@@ -217,10 +237,10 @@ when its acceptance check fails.
 `desktop/` plus 47 assertions and a headless smoke test that drives every view
 and writes screenshots. Proof: the smoke run reports the right verdict badges and
 the console's unverified count matches `podium ledger --unverified` exactly.
-Not notarized - macOS needs a right-click → Open the first time.
+Not notarized - macOS needs a right-click -> Open the first time.
 
 **Step 3 - One bot, one job, one executor.** *(1 hour)*
-Point `podium.conf` at real Codex. Run `podium run scout "…"` against a real
+Point `podium.conf` at real Codex. Run `podium run scout "..."` against a real
 repository. Proof: `podium result` contains a real report and `log.jsonl` gained
 a well-formed line.
 
@@ -230,7 +250,7 @@ the auth code, then have the implementer add a null check" produces two job ids,
 two results, and a verification step you can see it perform.
 
 **Step 5 - Parallel and chained work.** *(1 hour)*
-Three scouts at once on different subsystems; a scout → implementer → reviewer
+Three scouts at once on different subsystems; a scout -> implementer -> reviewer
 chain. Proof: three ids returned before the first finishes; the reviewer's brief
 visibly contains the implementer's output.
 

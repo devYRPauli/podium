@@ -5,9 +5,12 @@ write anything.
 
 ## What you are about to do
 
-Install a chief-of-staff orchestrator and a roster of bots into the user's pi
-configuration, plus a job runner and state directory. Nothing here touches
-credentials, and nothing here runs a network request during install.
+Install a job runner, a roster of bots, a state directory, and a chief-of-staff
+skill for Claude Code. Nothing here touches credentials, and nothing here runs a
+network request during install.
+
+There is no extension to install. The orchestrator drives the runner with the
+Bash tool it already has.
 
 ## Rules
 
@@ -23,13 +26,14 @@ credentials, and nothing here runs a network request during install.
 
 Ask these, one at a time:
 
-1. **Executor.** Which CLI runs the bots - `pi`, `codex`, `claude`, or something
-   else? Confirm it is on PATH (`command -v <cli>`) and that the user has
+1. **Executor.** Which CLI runs the bots - `codex`, `claude`, or something else?
+   Confirm it is on PATH (`command -v <cli>`) and that the user has
    authenticated it. Do not authenticate for them.
 2. **Model.** Which model should bots use by default? Leave blank to let the
-   executor decide.
+   executor decide, which is usually right when the executor already pins one
+   in its own config.
 3. **Home.** Where should state live? Default `~/.podium`.
-4. **pi config scope.** Global (`~/.pi/agent`) or project (`.pi`)?
+4. **Skill scope.** Global (`~/.claude/skills`) or project (`.claude/skills`)?
 5. **Timeout.** Hard timeout per job in seconds. Default 1800.
 6. **Parallelism.** Maximum concurrent jobs the orchestrator may launch.
    Default 3. Warn them: fanning out multiplies token spend against a
@@ -40,7 +44,7 @@ Ask these, one at a time:
    uncheckable work like open-ended research.
 8. **Roster.** Install all five sample bots, or a subset?
 9. **Desktop console.** Install it? It needs Node and about 200 MB of Electron.
-   The runner and the Pi extension work without it.
+   The runner and the skill work without it.
 
 ## Install
 
@@ -51,11 +55,10 @@ Render and write, in this order:
 | `bin/podium` | `<PODIUM_HOME>/bin/podium`, mode 755 |
 | `templates/podium.conf.tmpl` | `<PODIUM_HOME>/podium.conf` |
 | `bots/<name>/bot.md` (selected) | `<PODIUM_HOME>/bots/<name>/bot.md` |
-| `templates/orchestrator.ts.tmpl` | `<PI_SCOPE>/extensions/podium/index.ts` |
-| `templates/ORCHESTRATOR.md.tmpl` | `<PI_SCOPE>/skills/podium/SKILL.md` |
+| `templates/ORCHESTRATOR.md.tmpl` | `<SKILL_SCOPE>/podium/SKILL.md` |
 
 If the desktop console was chosen, leave `desktop/` where it is and run
-`npm install` inside it. Do not copy it into the Pi scope.
+`npm install` inside it. Do not copy it into the skill scope.
 
 Slots to fill:
 
@@ -63,7 +66,7 @@ Slots to fill:
 - `{{PODIUM_HOME}}` - absolute path to the state directory
 - `{{DEFAULT_MODEL}}` - from the interview, or empty
 - `{{TIMEOUT}}` - from the interview
-- `{{EXECUTOR_CLI}}` - the executor binary name, e.g. `pi` or `codex`
+- `{{EXECUTOR_CLI}}` - the executor binary name, e.g. `codex` or `claude`
 - `{{MAX_PARALLEL}}` - from the interview
 
 Also write `PODIUM_REQUIRE_CHECK=<0|1>` into `podium.conf` from answer 7.
@@ -133,17 +136,17 @@ Report the real output of each step. Do not summarise it as "passing". If step 4
 comes back `done` rather than `rejected`, the acceptance-check path is broken and
 the install has failed, however healthy everything else looks.
 
-Finally, start pi and confirm `/bots`, `/jobs` and `/receipts` are registered and
-that `delegate` appears in the tool list with a `check` parameter.
+Finally, start `claude` and confirm the `podium` skill is listed. Ask it to show
+the roster; it should run `podium bots` rather than describe what it would do.
 
-If the desktop console was installed, run `cd desktop && npm test` (47
+If the desktop console was installed, run `cd desktop && npm test` (51
 assertions) and `npm start`, and confirm the Receipts view shows the two jobs
 above with the right verdicts.
 
 ## Uninstall
 
 ```sh
-rm -rf <PI_SCOPE>/extensions/podium <PI_SCOPE>/skills/podium
+rm -rf <SKILL_SCOPE>/podium
 rm -rf <PODIUM_HOME>          # destructive: also removes job history and memory
 ```
 

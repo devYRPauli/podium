@@ -1,8 +1,9 @@
 # Podium
 
-*Verified delegation for [Pi](https://github.com/earendil-works/pi). A chief-of-staff
-agent hands work to a roster of persistent bots, and a runner - not a model -
-decides whether the work actually landed.*
+*Verified delegation driven by
+[Claude Code](https://code.claude.com/docs/en/overview). A chief-of-staff agent
+hands work to a roster of persistent bots, and a runner - not a model - decides
+whether the work actually landed.*
 
 You talk to one agent. It writes a brief, hands it to a specialist bot, and comes
 back with an answer. Every job carries an acceptance check that **the runner
@@ -19,8 +20,8 @@ No model, no auth, no config. Thirty seconds:
 ```
 
 It uses a stand-in executor, so nothing calls a real model and your `~/.podium`
-is untouched. It delegates five jobs — two that pass their acceptance check, one
-given no check at all, one whose check fails, and one that gets rate limited —
+is untouched. It delegates five jobs - two that pass their acceptance check, one
+given no check at all, one whose check fails, and one that gets rate limited -
 then shows you which of them actually proved anything, and finally edits the
 ledger in front of you so you can watch `podium audit` catch it.
 
@@ -62,11 +63,11 @@ readable in a sitting, with no database, no daemon and no server.
 ## What it does
 
 ```
-  you ──► orchestrator ──► podium ──► detached job ──► executor ──► bot
-          chief of staff   runner         │                         │
-                                          │                         └─ prompt + memory
-                                          ├── acceptance check (run by the runner)
-                                          └── log.jsonl  (the receipts)
+  you --> Claude Code --> podium --> detached job --> executor --> bot
+          chief of staff   runner         |                         |
+                                          |                         `- prompt + memory
+                                          +-- acceptance check (run by the runner)
+                                          `-- log.jsonl  (the receipts)
 ```
 
 - **A bot is a directory.** `bot.md` is its system prompt, `memory.md` is durable
@@ -83,38 +84,39 @@ readable in a sitting, with no database, no daemon and no server.
 
 v0, honestly labelled:
 
-- **Runner: complete and tested.** 90 assertions, including a live check that a
+- **Runner: complete and tested.** 92 assertions, including a live check that a
   detached worker's parent pid becomes 1 after its launching shell exits, that a
   failed acceptance check rejects a job whose executor exited 0, and that editing
   or deleting a receipt is detected.
 - **Desktop console: works, unsigned.** Boots, renders, and is smoke-tested
   headless with screenshots on every view. Not notarized, so macOS will need a
-  right-click → Open the first time.
-- **The Pi extension loads.** Verified against real pi 0.84.2: pi rejects a
-  broken extension loudly, and this one loads silently with all eight
-  registrations executing.
-- **Never run against a live model.** Everything is proved with a fake executor.
-  The first real run is yours.
+  right-click -> Open the first time.
+- **Claude Code skill: complete.** The Pi extension is gone. Claude Code needs no
+  extension. `templates/ORCHESTRATOR.md.tmpl` teaches it to run `podium` with the
+  Bash tool it already has.
+- **Live model: six jobs.** On 2026-08-21, Podium ran six real jobs through
+  Codex. Four reached `verified`, and two of those changed this repository.
+  Two reached `rejected / failed_check` with `exit_code=0`; the runner overrode
+  a clean executor exit both times. A detached worker's parent pid was 1. The
+  receipt chain stayed intact across all six.
+- **Executor preflight: three failures separated.** `podium doctor --executor`
+  distinguishes a bad flag, a missing login, and a read-only sandbox.
 
 ## Requirements
 
 macOS or Linux with bash and coreutils. The durability guarantee rests on
 `nohup`, `ps` and process reparenting, so Windows is out rather than faked.
 
-[Pi](https://github.com/earendil-works/pi) as the harness:
+Install an executor CLI and log in to it. The default is `codex exec`, using a
+ChatGPT subscription. `templates/podium.conf.tmpl` keeps Claude Code and pi as
+commented alternatives.
 
-```sh
-npm i -g @earendil-works/pi-coding-agent
-pi           # then /login
-```
+Podium never reads, stores or passes a credential. You run the executor's login
+command.
 
-Pi's `/login` covers ChatGPT Plus/Pro (Codex), GitHub Copilot, xAI, Claude,
-OpenRouter and others. **Codex is the recommended executor** - OpenAI endorses
-third-party harness use under Codex for OSS. See
-[docs/research.md §5](docs/research.md) for what each subscription actually costs
-you, including the Claude caveat.
-
-Podium never reads, stores or passes a credential. You run the login command.
+[docs/research.md section 5](docs/research.md) covers what each subscription
+costs you under a third-party harness, including the Claude caveat. Read it
+before you fan out.
 
 ## Install
 
@@ -139,7 +141,7 @@ $ podium run implementer "Add a null check to parse() in src/parser.ts" \
 20260821-052308-155126519
 
 $ podium status 20260821-052308-155126519
-id=… bot=implementer status=done verdict=verified duration_secs=41 exit_code=0
+id=... bot=implementer status=done verdict=verified duration_secs=41 exit_code=0
 
 $ podium ledger --unverified
 20260821-052315-157325573  researcher   rate_limited  unverified
@@ -164,7 +166,7 @@ WARN  the executor runs, but is not authenticated
 ```
 
 Run it before your first job, and after any change to `podium_executor()`. An
-executor you have not invoked is an executor you have not tested — that exact
+executor you have not invoked is an executor you have not tested - that exact
 `--cwd` line shipped in v0 and would have killed every job launched with the
 default config.
 
