@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'">
+<title>Podium</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="titlebar"></div>
+
+  <div id="shell">
+    <!-- Left: who is on the roster, and the receipts -->
+    <aside id="rail">
+      <div class="rail-head">
+        <span class="wordmark">Podium</span>
+        <span id="conn" class="dot" title="orchestrator stopped"></span>
+      </div>
+
+      <nav class="tabs" role="tablist">
+        <button class="tab is-on" data-view="talk" role="tab">Talk</button>
+        <button class="tab" data-view="roster" role="tab">Roster</button>
+        <button class="tab" data-view="receipts" role="tab">Receipts</button>
+      </nav>
+
+      <div id="rail-body"></div>
+
+      <div class="rail-foot">
+        <button id="pick-cwd" class="ghost" title="Choose the directory bots work in">
+          <span id="cwd-label">no folder</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Centre: the conversation. The front door, deliberately. -->
+    <main id="centre">
+      <header id="banner" hidden></header>
+
+      <section id="view-talk" class="view is-on">
+        <div id="transcript" aria-live="polite"></div>
+        <form id="composer">
+          <textarea id="input" rows="1" placeholder="Ask the chief of staff to get something done…"
+                    autocomplete="off" spellcheck="true"></textarea>
+          <div class="composer-row">
+            <span id="hint" class="hint"></span>
+            <button type="button" id="stop" class="ghost" hidden>Stop</button>
+            <button type="submit" id="send">Send</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="view-roster" class="view"></section>
+      <section id="view-receipts" class="view"></section>
+    </main>
+
+    <!-- Right: what was delegated, and whether it was actually checked -->
+    <aside id="jobs">
+      <div class="jobs-head">
+        <span>Delegated work</span>
+        <span id="jobs-count" class="count">0</span>
+      </div>
+      <div id="jobs-list"></div>
+    </aside>
+  </div>
+
+  <!-- Job detail -->
+  <div id="sheet" hidden>
+    <div id="sheet-card" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+      <header>
+        <h2 id="sheet-title"></h2>
+        <button id="sheet-close" class="ghost" aria-label="Close">Close</button>
+      </header>
+      <div id="sheet-body"></div>
+    </div>
+  </div>
+
+  <script src="view-model.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

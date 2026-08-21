@@ -1,0 +1,15 @@
+# Local state produced by running the kit.
+jobs/
+log.jsonl
+log.jsonl.head
+log.jsonl.lock/
+*/workspace/
+bots/*/memory.md
+
+# Node
+node_modules/
+dist/
+out/
+
+# OS
+.DS_Store

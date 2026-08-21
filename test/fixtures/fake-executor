@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Stand-in executor. Args: $1=model $2=cwd $3=outfile $4=brieffile $5=systemfile
+# Behaviour is driven by markers in the brief so tests can force each outcome.
+set -uo pipefail
+model=$1; cwd=$2; outfile=$3; brieffile=$4; systemfile=$5
+brief=$(cat "$brieffile")
+
+case "$brief" in
+  *FAKE_RATELIMIT*)
+    # Emit the throttle notice first, then stall - exactly how a real one looks.
+    echo "Error 429: rate limit exceeded, retrying" > "$outfile"
+    sleep 30
+    ;;
+esac
+
+case "$brief" in
+  *FAKE_SLEEP*) secs=$(printf '%s' "$brief" | sed -n 's/.*FAKE_SLEEP=\([0-9]*\).*/\1/p'); sleep "${secs:-1}" ;;
+esac
+
+{
+  echo "model=$model"
+  echo "cwd=$cwd"
+  echo "system_first_line=$(head -1 "$systemfile")"
+  echo "system_has_memory=$(grep -qc 'Durable memory' "$systemfile" >/dev/null 2>&1 && echo yes || echo no)"
+  echo "ppid=$(ps -o ppid= -p $$ | tr -d ' ')"
+  echo "brief=$brief"
+} > "$outfile"
+
+case "$brief" in
+  *FAKE_FAIL*) exit 3 ;;
+esac
+exit 0

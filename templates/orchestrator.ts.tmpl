@@ -1,0 +1,243 @@
+/**
+ * podium - the chief-of-staff orchestrator for pi.
+ *
+ * Registers the tools the orchestrator uses to run a roster of persistent
+ * bots: look at who is available, hand one a brief, check on it, collect the
+ * result, and write something back into that bot's durable memory.
+ *
+ * Jobs run through the `podium` runner, which detaches them. A job outlives
+ * this session, so you can close the terminal and collect the result later.
+ *
+ * Rendered by SETUP.md. Slots: {{PODIUM_BIN}}, {{PODIUM_HOME}}.
+ */
+
+import { execFile } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { promisify } from "node:util";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+
+const execFileAsync = promisify(execFile);
+
+const PODIUM_BIN = "{{PODIUM_BIN}}";
+const PODIUM_HOME = "{{PODIUM_HOME}}";
+
+async function podium(args: string[], signal?: AbortSignal): Promise<string> {
+	try {
+		const { stdout } = await execFileAsync(PODIUM_BIN, args, {
+			signal,
+			maxBuffer: 16 * 1024 * 1024,
+			env: { ...process.env, PODIUM_HOME },
+		});
+		return stdout.trim();
+	} catch (error) {
+		const err = error as { stderr?: string; message?: string };
+		throw new Error(err.stderr?.trim() || err.message || "podium failed");
+	}
+}
+
+function text(body: string) {
+	return { content: [{ type: "text" as const, text: body }], details: {} };
+}
+
+export default function (pi: ExtensionAPI) {
+	// ---- roster ------------------------------------------------------------
+	pi.registerTool({
+		name: "roster",
+		label: "Roster",
+		description:
+			"List the bots available for delegation, with what each one is for. " +
+			"Call this before delegating if you are not certain which bot fits.",
+		parameters: Type.Object({}),
+		async execute(_id, _params, signal) {
+			const out = await podium(["bots"], signal);
+			return text(out || "The roster is empty. Add a bot under $PODIUM_HOME/bots/<name>/bot.md.");
+		},
+	});
+
+	// ---- delegate ----------------------------------------------------------
+	pi.registerTool({
+		name: "delegate",
+		label: "Delegate",
+		description:
+			"Hand a briefed task to one bot. Returns a job id immediately; the job keeps " +
+			"running if this session ends. The check parameter is a real shell command that " +
+			"the RUNNER executes after the bot finishes - not a description, and not " +
+			"something the bot can satisfy by claiming success. A job whose check fails is " +
+			"rejected. A job with no check is recorded as unverified forever.",
+		parameters: Type.Object({
+			bot: Type.String({ description: "Bot name from the roster" }),
+			brief: Type.String({
+				description:
+					"The full brief: goal, scope, constraints, acceptance check. Self-contained - " +
+					"the bot has not seen this conversation.",
+			}),
+			check: Type.Optional(
+				Type.String({
+					description:
+						"Shell command proving the work landed, run by the runner in cwd after the " +
+						"bot finishes. Exit 0 means verified. Make it specific to this task - " +
+						"'npm test -- parser', 'grep -q retryFetch src/http.ts'. A check that " +
+						"passes whether or not the work happened ('true', 'ls') is worse than none, " +
+						"because it is recorded as verification.",
+				}),
+			),
+			cwd: Type.Optional(Type.String({ description: "Working directory for the job" })),
+			model: Type.Optional(Type.String({ description: "Override the bot's default model" })),
+			timeout: Type.Optional(Type.Number({ description: "Hard timeout in seconds" })),
+			wait: Type.Optional(
+				Type.Boolean({ description: "Block until the job settles. Use only for short jobs." }),
+			),
+		}),
+		async execute(_id, params, signal) {
+			const args = ["run", params.bot, params.brief];
+			if (params.check) args.push("--check", params.check);
+			if (params.cwd) args.push("--cwd", params.cwd);
+			if (params.model) args.push("--model", params.model);
+			if (params.timeout) args.push("--timeout", String(params.timeout));
+			if (params.wait) args.push("--wait");
+
+			const jobId = await podium(args, signal);
+			const status = await podium(["status", jobId], signal);
+
+			if (params.wait) {
+				const result = await podium(["result", jobId], signal);
+				return text(`${status}\n\n--- result ---\n${result}`);
+			}
+			const note = params.check
+				? `The runner will run \`${params.check}\` when it finishes; collect will tell you the verdict.`
+				: "NO ACCEPTANCE CHECK was given, so this job can never be verified. Say so when you report it.";
+			return text(`${status}\n\nLaunched as ${jobId}. ${note}`);
+		},
+	});
+
+	// ---- check -------------------------------------------------------------
+	pi.registerTool({
+		name: "check",
+		label: "Check jobs",
+		description: "Check one job by id, or list jobs when no id is given.",
+		parameters: Type.Object({
+			job: Type.Optional(Type.String({ description: "Job id. Omit to list all jobs." })),
+			bot: Type.Optional(Type.String({ description: "Filter the list by bot" })),
+			status: Type.Optional(
+				Type.String({ description: "Filter the list by status: queued, running, done, failed, timeout" }),
+			),
+		}),
+		async execute(_id, params, signal) {
+			if (params.job) return text(await podium(["status", params.job], signal));
+			const args = ["list"];
+			if (params.bot) args.push("--bot", params.bot);
+			if (params.status) args.push("--status", params.status);
+			const out = await podium(args, signal);
+			return text(out || "No jobs yet.");
+		},
+	});
+
+	// ---- collect -----------------------------------------------------------
+	pi.registerTool({
+		name: "collect",
+		label: "Collect result",
+		description:
+			"Retrieve a finished job's output. Large output is written to a file and the path " +
+			"is returned instead, to keep it out of this context window.",
+		parameters: Type.Object({
+			job: Type.String({ description: "Job id" }),
+			maxInline: Type.Optional(
+				Type.Number({ description: "Characters to return inline before spilling to a file (default 8000)" }),
+			),
+		}),
+		async execute(_id, params, signal) {
+			const status = await podium(["status", params.job], signal);
+			if (!/status=(done|failed|timeout)/.test(status)) {
+				return text(`${status}\n\nNot settled yet. Check again shortly.`);
+			}
+			const result = await podium(["result", params.job], signal);
+			const verdict = /verdict=(\w+)/.exec(status)?.[1] ?? "unknown";
+			const banner =
+				verdict === "verified"
+					? "VERIFIED - the runner ran the acceptance check and it passed."
+					: verdict === "failed_check"
+						? "REJECTED - the acceptance check FAILED. Do not report this as done."
+						: "UNVERIFIED - no acceptance check passed. The bot's report is not evidence.";
+			const cap = params.maxInline ?? 8000;
+			if (result.length <= cap) return text(`${banner}\n${status}\n\n--- result ---\n${result}`);
+
+			const spill = path.join(PODIUM_HOME, "jobs", params.job, "out.txt");
+			return text(
+				`${banner}\n${status}\n\nResult is ${result.length} characters. Full output: ${spill}\n\n` +
+					`--- first ${cap} characters ---\n${result.slice(0, cap)}`,
+			);
+		},
+	});
+
+	// ---- receipts ----------------------------------------------------------
+	pi.registerTool({
+		name: "receipts",
+		label: "Receipts",
+		description:
+			"The audit ledger: what ran, what acceptance check it was given, and what the " +
+			"runner's verdict was. Use it to answer 'what have we not actually verified?'",
+		parameters: Type.Object({
+			unverifiedOnly: Type.Optional(Type.Boolean({ description: "Only jobs that were never verified" })),
+			bot: Type.Optional(Type.String({ description: "Filter to one bot" })),
+			limit: Type.Optional(Type.Number({ description: "How many rows (default 20)" })),
+		}),
+		async execute(_id, params, signal) {
+			const args = ["ledger", "--limit", String(params.limit ?? 20)];
+			if (params.unverifiedOnly) args.push("--unverified");
+			if (params.bot) args.push("--bot", params.bot);
+			return text(await podium(args, signal));
+		},
+	});
+
+	// ---- remember ----------------------------------------------------------
+	pi.registerTool({
+		name: "remember",
+		label: "Write bot memory",
+		description:
+			"Append a durable note to one bot's memory. It is prepended to that bot's system " +
+			"prompt on every future job. Use it for standing preferences and hard-won facts, " +
+			"not for transcript.",
+		parameters: Type.Object({
+			bot: Type.String({ description: "Bot name" }),
+			note: Type.String({ description: "One or two lines. Durable, not conversational." }),
+		}),
+		async execute(_id, params) {
+			const dir = path.join(PODIUM_HOME, "bots", params.bot);
+			if (!fs.existsSync(path.join(dir, "bot.md"))) {
+				throw new Error(`unknown bot '${params.bot}'`);
+			}
+			const stamp = new Date().toISOString().slice(0, 10);
+			fs.appendFileSync(path.join(dir, "memory.md"), `- (${stamp}) ${params.note.trim()}\n`);
+			return text(`Noted for ${params.bot}.`);
+		},
+	});
+
+	// ---- commands ----------------------------------------------------------
+	pi.registerCommand("bots", {
+		description: "Show the bot roster",
+		handler: async (_args, ctx) => {
+			const out = await podium(["bots"]);
+			ctx.ui.notify(out || "Roster is empty.", "info");
+		},
+	});
+
+	pi.registerCommand("receipts", {
+		description: "Show what was verified and what was not",
+		handler: async (args, ctx) => {
+			const extra = args.trim() === "unverified" ? ["--unverified"] : [];
+			const out = await podium(["ledger", "--limit", "30", ...extra]);
+			ctx.ui.notify(out || "Nothing has settled yet.", "info");
+		},
+	});
+
+	pi.registerCommand("jobs", {
+		description: "Show recent podium jobs",
+		handler: async (args, ctx) => {
+			const extra = args.trim() ? args.trim().split(/\s+/) : [];
+			const out = await podium(["list", ...extra]);
+			ctx.ui.notify(out || "No jobs yet.", "info");
+		},
+	});
+}

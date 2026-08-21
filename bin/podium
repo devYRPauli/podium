@@ -1,0 +1,683 @@
+#!/usr/bin/env bash
+# podium - durable job runner for a roster of agent bots.
+#
+# Hands a brief to a named bot, detaches the job so it outlives this shell,
+# and keeps status and results retrievable afterwards. Zero dependencies
+# beyond bash and coreutils. macOS and Linux only.
+set -uo pipefail
+
+PODIUM_VERSION="0.1.0"
+
+# Precedence: explicit environment > podium.conf > built-in default.
+# This must run before the defaults below, because assigning to an
+# already-exported name overwrites the exported value too - so capturing later
+# would read back the default, not what the caller set.
+_PODIUM_ENV_OVERRIDES=""
+for _v in PODIUM_TIMEOUT PODIUM_REQUIRE_CHECK PODIUM_RATELIMIT_RE PODIUM_EXECUTOR_CLI \
+          PODIUM_DEFAULT_MODEL PODIUM_BOTS_DIR PODIUM_JOBS_DIR PODIUM_LOG; do
+  if env | grep -q "^${_v}="; then
+    _PODIUM_ENV_OVERRIDES="${_PODIUM_ENV_OVERRIDES} ${_v}=$(printf '%q' "$(eval "printf '%s' \"\$$_v\"")")"
+  fi
+done
+unset _v
+PODIUM_HOME="${PODIUM_HOME:-$HOME/.podium}"
+PODIUM_CONF="${PODIUM_CONF:-$PODIUM_HOME/podium.conf}"
+
+# --- defaults, overridden by podium.conf ------------------------------------
+PODIUM_TIMEOUT=1800
+PODIUM_BOTS_DIR="$PODIUM_HOME/bots"
+PODIUM_JOBS_DIR="$PODIUM_HOME/jobs"
+PODIUM_LOG="$PODIUM_HOME/log.jsonl"
+PODIUM_DEFAULT_MODEL=""
+# When 1, a job with no acceptance check is refused rather than silently trusted.
+PODIUM_REQUIRE_CHECK=0
+# The executor binary, named so `podium doctor` can confirm it is installed.
+PODIUM_EXECUTOR_CLI=""
+# Output matching this (case-insensitive, extended regex) means the executor was
+# throttled, not hung. Recorded distinctly so starvation never reads as a hang.
+PODIUM_RATELIMIT_RE="rate.?limit|429|too many requests|quota exceeded|usage limit|overloaded"
+
+# The executor invocation. Overridden in podium.conf.
+# Args: $1=model $2=cwd $3=outfile $4=brieffile $5=systemfile
+podium_executor() {
+  echo "podium: no executor configured. Set podium_executor() in $PODIUM_CONF" >&2
+  return 127
+}
+
+[ -f "$PODIUM_CONF" ] && . "$PODIUM_CONF"
+
+# Re-apply anything the caller exported explicitly (captured before defaults ran).
+[ -n "${_PODIUM_ENV_OVERRIDES:-}" ] && eval "$_PODIUM_ENV_OVERRIDES"
+unset _PODIUM_ENV_OVERRIDES
+
+die() { echo "podium: $*" >&2; exit 1; }
+
+# One definition of "this job will not change again", used by every waiter, so
+# adding a status can never again strand one in an infinite loop.
+is_settled() {
+  case "$1" in
+    done|failed|timeout|rejected|rate_limited|cancelled) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Portable SHA-256. Linux ships sha256sum, macOS ships shasum.
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
+  else
+    printf 'nohash'
+  fi
+}
+
+GENESIS_HASH="0000000000000000000000000000000000000000000000000000000000000000"
+
+# Append one receipt, chained to the one before it.
+#
+# Concurrent jobs settle at the same moment routinely, and two workers reading
+# the same tail would each chain to it and break the chain. mkdir is atomic on
+# every POSIX filesystem, so it is the lock.
+append_receipt() {
+  local line_body=$1
+  local lock="${PODIUM_LOG}.lock"
+  local waited=0
+  while ! mkdir "$lock" 2>/dev/null; do
+    sleep 0.2
+    waited=$((waited+1))
+    if [ "$waited" -gt 100 ]; then
+      # 20s is far longer than an append takes; assume the holder died.
+      rmdir "$lock" 2>/dev/null || true
+    fi
+  done
+  # shellcheck disable=SC2064
+  trap "rmdir '$lock' 2>/dev/null" EXIT
+
+  local prev="$GENESIS_HASH"
+  if [ -s "$PODIUM_LOG" ]; then
+    prev=$(sha256_of "$(tail -n 1 "$PODIUM_LOG")")
+  fi
+  local full="${line_body%\}},\"prev\":\"$prev\"}"
+  printf '%s\n' "$full" >> "$PODIUM_LOG"
+
+  # The chain alone cannot protect the newest receipt, because nothing links to
+  # it yet - editing the last line would go unnoticed. The head hash is kept in
+  # its own file so that tampering means editing two files consistently rather
+  # than one.
+  sha256_of "$full" > "${PODIUM_LOG}.head"
+
+  rmdir "$lock" 2>/dev/null
+  trap - EXIT
+}
+
+json_escape() {
+  # Escape a string for embedding in JSON. Handles backslash, quote, control chars.
+  local s=${1//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/\\r}
+  s=${s//$'\t'/\\t}
+  printf '%s' "$s"
+}
+
+new_job_id() {
+  printf '%s-%s' "$(date -u +%Y%m%d-%H%M%S)" "$$$RANDOM"
+}
+
+bot_dir()  { printf '%s/%s' "$PODIUM_BOTS_DIR" "$1"; }
+bot_file() { printf '%s/%s/bot.md' "$PODIUM_BOTS_DIR" "$1"; }
+job_dir()  { printf '%s/%s' "$PODIUM_JOBS_DIR" "$1"; }
+
+require_bot() {
+  local bot=$1
+  case "$bot" in
+    ""|*/*|.*) die "invalid bot name: '$bot'" ;;
+  esac
+  [ -f "$(bot_file "$bot")" ] || die "unknown bot '$bot'. Run 'podium bots' to see the roster."
+}
+
+# Read a frontmatter key from a bot.md file. Returns empty if absent.
+bot_meta() {
+  local file=$1 key=$2
+  awk -v key="$key" '
+    NR==1 && $0=="---" { inside=1; next }
+    inside && $0=="---" { exit }
+    inside {
+      if (index($0, key ":") == 1) {
+        sub("^" key ":[ \t]*", "")
+        gsub(/^[ \t]+|[ \t]+$/, "")
+        print
+        exit
+      }
+    }
+  ' "$file"
+}
+
+# Strip YAML frontmatter, leaving the system prompt body.
+bot_prompt() {
+  awk 'NR==1 && $0=="---" { inside=1; next } inside && $0=="---" { inside=0; body=1; next } body || NR==1 && $0!="---"' "$1"
+}
+
+# --- worker -----------------------------------------------------------------
+# Runs detached. Executes the bot, enforces the timeout, records the outcome.
+cmd_worker() {
+  local jd=$1
+  # shellcheck disable=SC1091
+  . "$jd/meta.env"
+
+  echo "$$" > "$jd/pid"
+  echo running > "$jd/status"
+  local started; started=$(date +%s)
+  echo "$started" > "$jd/started"
+
+  podium_executor "$JOB_MODEL" "$JOB_CWD" "$jd/out.txt" "$jd/brief.txt" "$jd/system.txt" &
+  local exec_pid=$!
+
+  local elapsed=0 timed_out=0
+  while kill -0 "$exec_pid" 2>/dev/null; do
+    sleep 1
+    elapsed=$(( $(date +%s) - started ))
+    if [ "$elapsed" -ge "$JOB_TIMEOUT" ]; then
+      timed_out=1
+      kill -TERM "$exec_pid" 2>/dev/null
+      sleep 2
+      kill -KILL "$exec_pid" 2>/dev/null
+      break
+    fi
+  done
+
+  wait "$exec_pid" 2>/dev/null
+  local code=$?
+  local duration=$(( $(date +%s) - started ))
+
+  echo "$code" > "$jd/exit_code"
+  echo "$duration" > "$jd/duration"
+
+  local status
+  if [ "$timed_out" -eq 1 ]; then
+    # A throttled executor and a hung one look identical from the outside. They
+    # are not the same failure, and reporting starvation as a hang sends you
+    # debugging the wrong thing.
+    if grep -qiE "$PODIUM_RATELIMIT_RE" "$jd/out.txt" 2>/dev/null; then
+      status=rate_limited
+    else
+      status=timeout
+    fi
+  elif [ "$code" -eq 0 ]; then
+    status=done
+  else
+    status=failed
+  fi
+
+  # --- acceptance check -----------------------------------------------------
+  # The runner runs it, not the model. A bot cannot mark its own work verified.
+  local verdict=unverified check_exit=null
+  if [ -n "${JOB_CHECK:-}" ]; then
+    if [ "$status" = "done" ]; then
+      printf '%s\n' "$JOB_CHECK" > "$jd/check.cmd"
+      ( cd "$JOB_CWD" && eval "$JOB_CHECK" ) > "$jd/check.txt" 2>&1
+      check_exit=$?
+      echo "$check_exit" > "$jd/check_exit"
+      if [ "$check_exit" -eq 0 ]; then
+        verdict=verified
+      else
+        verdict=failed_check
+        status=rejected
+      fi
+    else
+      verdict=not_run
+    fi
+  fi
+  echo "$verdict" > "$jd/verdict"
+  echo "$status" > "$jd/status"
+
+  mkdir -p "$(dirname "$PODIUM_LOG")"
+  local receipt
+  receipt=$(printf '{"ts":"%s","id":"%s","bot":"%s","model":"%s","status":"%s","exit_code":%s,"duration_secs":%s,"timed_out":%s,"verdict":"%s","verified":%s,"check":"%s","check_exit":%s,"cwd":"%s"}' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$(json_escape "$JOB_ID")" \
+    "$(json_escape "$JOB_BOT")" \
+    "$(json_escape "$JOB_MODEL")" \
+    "$status" "$code" "$duration" \
+    "$( [ "$timed_out" -eq 1 ] && echo true || echo false )" \
+    "$verdict" \
+    "$( [ "$verdict" = "verified" ] && echo true || echo false )" \
+    "$(json_escape "${JOB_CHECK:-}")" \
+    "$check_exit" \
+    "$(json_escape "$JOB_CWD")")
+  append_receipt "$receipt"
+}
+
+# --- run --------------------------------------------------------------------
+cmd_run() {
+  local bot="" brief="" cwd="$PWD" model="" timeout="$PODIUM_TIMEOUT" wait_for=0 check=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --check)   check=$2; shift 2 ;;
+      --cwd)     cwd=$2; shift 2 ;;
+      --model)   model=$2; shift 2 ;;
+      --timeout) timeout=$2; shift 2 ;;
+      --wait)    wait_for=1; shift ;;
+      --) shift; break ;;
+      -*) die "unknown flag: $1" ;;
+      *) if [ -z "$bot" ]; then bot=$1; else brief=$1; fi; shift ;;
+    esac
+  done
+
+  [ -n "$bot" ] || die "usage: podium run <bot> \"<brief>\" [--cwd DIR] [--model M] [--timeout S] [--wait]"
+  require_bot "$bot"
+  [ -d "$cwd" ] || die "cwd does not exist: $cwd"
+
+  # Brief comes from the argument or stdin.
+  if [ -z "$brief" ] && [ ! -t 0 ]; then brief=$(cat); fi
+  [ -n "$brief" ] || die "empty brief. Pass it as an argument or on stdin."
+
+  # The enforcement Podium exists for: without an acceptance check there is no
+  # way to know the work landed, so under this policy the job is refused.
+  if [ "${PODIUM_REQUIRE_CHECK:-0}" = "1" ] && [ -z "$check" ]; then
+    die "no acceptance check. Pass --check '<command>' (PODIUM_REQUIRE_CHECK=1)."
+  fi
+
+  local bf; bf=$(bot_file "$bot")
+  [ -n "$model" ] || model=$(bot_meta "$bf" model)
+  [ -n "$model" ] || model="$PODIUM_DEFAULT_MODEL"
+
+  # A bot's workspace is its own directory unless the caller overrides cwd.
+  local ws; ws="$(bot_dir "$bot")/workspace"
+  mkdir -p "$ws"
+
+  local id; id=$(new_job_id)
+  local jd; jd=$(job_dir "$id")
+  mkdir -p "$jd"
+
+  printf '%s\n' "$brief" > "$jd/brief.txt"
+  bot_prompt "$bf" > "$jd/system.txt"
+
+  # A bot's durable memory is prepended to its system prompt when present.
+  local mem; mem="$(bot_dir "$bot")/memory.md"
+  if [ -s "$mem" ]; then
+    { printf '\n\n## Durable memory (yours, from previous jobs)\n\n'; cat "$mem"; } >> "$jd/system.txt"
+  fi
+
+  {
+    printf 'JOB_ID=%q\n'      "$id"
+    printf 'JOB_BOT=%q\n'     "$bot"
+    printf 'JOB_MODEL=%q\n'   "$model"
+    printf 'JOB_CWD=%q\n'     "$cwd"
+    printf 'JOB_TIMEOUT=%q\n' "$timeout"
+    printf 'JOB_WS=%q\n'      "$ws"
+    printf 'JOB_CHECK=%q\n'   "$check"
+  } > "$jd/meta.env"
+
+  echo queued > "$jd/status"
+  : > "$jd/out.txt"
+
+  # Detach. nohup plus an exiting parent means init adopts the worker, so the
+  # job outlives the shell (and the agent session) that launched it.
+  nohup "$0" __worker "$jd" >/dev/null 2>&1 &
+  disown 2>/dev/null
+
+  if [ "$wait_for" -eq 1 ]; then
+    local waited=0 cur
+    while :; do
+      cur=$(cat "$jd/status" 2>/dev/null || echo queued)
+      is_settled "$cur" && break
+      sleep 1
+      waited=$((waited+1))
+      # Never outlast the job itself, plus slack for the acceptance check.
+      if [ "$waited" -gt $(( timeout + 30 )) ]; then
+        echo "podium: --wait gave up after ${waited}s (job $id is $cur)" >&2
+        break
+      fi
+    done
+  fi
+
+  echo "$id"
+}
+
+# --- introspection ----------------------------------------------------------
+cmd_status() {
+  local as_json=0 id=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) as_json=1; shift ;;
+      *) id=$1; shift ;;
+    esac
+  done
+  [ -n "$id" ] || die "usage: podium status <id> [--json]"
+  local jd; jd=$(job_dir "$id"); [ -d "$jd" ] || die "unknown job: $id"
+  # shellcheck disable=SC1091
+  . "$jd/meta.env"
+  local status; status=$(cat "$jd/status" 2>/dev/null || echo unknown)
+  local code;   code=$(cat "$jd/exit_code" 2>/dev/null || echo -)
+  local dur;    dur=$(cat "$jd/duration" 2>/dev/null || echo -)
+
+  if [ "$as_json" -eq 1 ]; then
+    # Live duration for a job that has not settled yet.
+    if [ "$dur" = "-" ] && [ -f "$jd/started" ]; then
+      dur=$(( $(date +%s) - $(cat "$jd/started") ))
+    fi
+    local verdict; verdict=$(cat "$jd/verdict" 2>/dev/null || echo pending)
+    local cexit;   cexit=$(cat "$jd/check_exit" 2>/dev/null || echo "")
+    printf '{"id":"%s","bot":"%s","model":"%s","status":"%s","duration_secs":%s,"exit_code":%s,"verdict":"%s","verified":%s,"check":"%s","check_exit":%s,"cwd":"%s","bytes":%s}\n' \
+      "$(json_escape "$id")" "$(json_escape "$JOB_BOT")" "$(json_escape "${JOB_MODEL:-}")" \
+      "$status" "$( [ "$dur" = "-" ] && echo null || echo "$dur" )" \
+      "$( [ "$code" = "-" ] && echo null || echo "$code" )" \
+      "$verdict" \
+      "$( [ "$verdict" = "verified" ] && echo true || echo false )" \
+      "$(json_escape "${JOB_CHECK:-}")" \
+      "$( [ -z "$cexit" ] && echo null || echo "$cexit" )" \
+      "$(json_escape "$JOB_CWD")" \
+      "$(wc -c < "$jd/out.txt" 2>/dev/null | tr -d ' ' || echo 0)"
+    return 0
+  fi
+
+  local verdict; verdict=$(cat "$jd/verdict" 2>/dev/null || echo pending)
+  printf 'id=%s bot=%s model=%s status=%s verdict=%s duration_secs=%s exit_code=%s\n' \
+    "$id" "$JOB_BOT" "${JOB_MODEL:-default}" "$status" "$verdict" "$dur" "$code"
+}
+
+# Full job detail, including the brief. Used by the desktop console.
+cmd_show() {
+  local id=${1:-}; [ -n "$id" ] || die "usage: podium show <id>"
+  local jd; jd=$(job_dir "$id"); [ -d "$jd" ] || die "unknown job: $id"
+  # shellcheck disable=SC1091
+  . "$jd/meta.env"
+  local status; status=$(cat "$jd/status" 2>/dev/null || echo unknown)
+  local code;   code=$(cat "$jd/exit_code" 2>/dev/null || echo -)
+  local dur;    dur=$(cat "$jd/duration" 2>/dev/null || echo -)
+  if [ "$dur" = "-" ] && [ -f "$jd/started" ]; then
+    dur=$(( $(date +%s) - $(cat "$jd/started") ))
+  fi
+  local verdict; verdict=$(cat "$jd/verdict" 2>/dev/null || echo pending)
+  local cexit;   cexit=$(cat "$jd/check_exit" 2>/dev/null || echo "")
+  printf '{"id":"%s","bot":"%s","model":"%s","status":"%s","duration_secs":%s,"exit_code":%s,"verdict":"%s","verified":%s,"check":"%s","check_exit":%s,"check_output":"%s","cwd":"%s","brief":"%s","result":"%s"}\n' \
+    "$(json_escape "$id")" "$(json_escape "$JOB_BOT")" "$(json_escape "${JOB_MODEL:-}")" \
+    "$status" "$( [ "$dur" = "-" ] && echo null || echo "$dur" )" \
+    "$( [ "$code" = "-" ] && echo null || echo "$code" )" \
+    "$verdict" \
+    "$( [ "$verdict" = "verified" ] && echo true || echo false )" \
+    "$(json_escape "${JOB_CHECK:-}")" \
+    "$( [ -z "$cexit" ] && echo null || echo "$cexit" )" \
+    "$(json_escape "$(cat "$jd/check.txt" 2>/dev/null)")" \
+    "$(json_escape "$JOB_CWD")" \
+    "$(json_escape "$(cat "$jd/brief.txt" 2>/dev/null)")" \
+    "$(json_escape "$(cat "$jd/out.txt" 2>/dev/null)")"
+}
+
+# The receipts. Answers "what actually got verified?" rather than "what ran?".
+cmd_ledger() {
+  local only_unverified=0 filter_bot="" limit=50 as_json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --audit)      cmd_audit; return $? ;;
+      --unverified) only_unverified=1; shift ;;
+      --bot)        filter_bot=$2; shift 2 ;;
+      --limit)      limit=$2; shift 2 ;;
+      --json)       as_json=1; shift ;;
+      *) shift ;;
+    esac
+  done
+  [ -f "$PODIUM_LOG" ] || { [ "$as_json" -eq 1 ] && echo "[]" ; return 0; }
+
+  PODIUM_ONLY_UNVERIFIED=$only_unverified PODIUM_FILTER_BOT=$filter_bot \
+  PODIUM_LIMIT=$limit PODIUM_AS_JSON=$as_json \
+  awk -v only="$only_unverified" -v bot="$filter_bot" -v lim="$limit" -v asjson="$as_json" '
+    function field(line, key,   re, v) {
+      re = "\"" key "\":\"[^\"]*\""
+      if (match(line, re)) { v = substr(line, RSTART, RLENGTH); sub(".*:\"", "", v); sub("\"$", "", v); return v }
+      re = "\"" key "\":[^,}]*"
+      if (match(line, re)) { v = substr(line, RSTART, RLENGTH); sub(".*:", "", v); return v }
+      return ""
+    }
+    { lines[NR] = $0 }
+    END {
+      shown = 0
+      if (asjson) printf "["
+      first = 1
+      for (i = NR; i >= 1 && shown < lim; i--) {
+        line = lines[i]
+        v = field(line, "verified")
+        b = field(line, "bot")
+        if (only == 1 && v == "true") continue
+        if (bot != "" && b != bot) continue
+        shown++
+        if (asjson) { if (!first) printf ","; printf "%s", line; first = 0; continue }
+        printf "%-26s %-13s %-10s %-13s %s\n", field(line,"id"), b, field(line,"status"), field(line,"verdict"), field(line,"check")
+      }
+      if (asjson) printf "]\n"
+      else if (shown == 0) print "(nothing matched)"
+    }
+  ' "$PODIUM_LOG"
+}
+
+# Walk the receipt chain. A ledger that cannot be edited without detection is
+# the difference between an audit trail and a log file.
+cmd_audit() {
+  [ -f "$PODIUM_LOG" ] || { echo "no ledger at $PODIUM_LOG"; return 0; }
+
+  local n=0 broken=0 prev_hash="$GENESIS_HASH" line claimed
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    n=$((n+1))
+    claimed=$(printf '%s' "$line" | sed -n 's/.*"prev":"\([0-9a-f]*\)".*/\1/p')
+    if [ -z "$claimed" ]; then
+      printf 'line %s: no chain field (written before chaining was added)\n' "$n"
+    elif [ "$claimed" != "$prev_hash" ]; then
+      printf 'line %s: CHAIN BROKEN\n' "$n"
+      printf '  expected prev %s\n' "$prev_hash"
+      printf '  found        %s\n' "$claimed"
+      broken=1
+      break
+    fi
+    prev_hash=$(sha256_of "$line")
+  done < "$PODIUM_LOG"
+
+  if [ "$broken" -eq 1 ]; then
+    printf '\n%s receipt(s) checked. The ledger has been edited or truncated.\n' "$n"
+    return 1
+  fi
+
+  # The newest receipt has no successor to protect it, so it is checked against
+  # the separately stored head.
+  if [ -f "${PODIUM_LOG}.head" ]; then
+    local recorded; recorded=$(cat "${PODIUM_LOG}.head")
+    if [ "$recorded" != "$prev_hash" ]; then
+      printf 'HEAD MISMATCH on the newest receipt (line %s)\n' "$n"
+      printf '  recorded  %s\n' "$recorded"
+      printf '  computed  %s\n' "$prev_hash"
+      printf '\n%s receipt(s) checked. The last receipt has been edited.\n' "$n"
+      return 1
+    fi
+  else
+    printf 'note: no head file; the newest receipt is unprotected\n'
+  fi
+
+  printf '%s receipt(s), chain intact.\n' "$n"
+  printf 'head: %s\n' "$prev_hash"
+}
+
+# Re-run a job's acceptance check by hand, without re-running the job.
+cmd_verify() {
+  local id=${1:-}; [ -n "$id" ] || die "usage: podium verify <id>"
+  local jd; jd=$(job_dir "$id"); [ -d "$jd" ] || die "unknown job: $id"
+  # shellcheck disable=SC1091
+  . "$jd/meta.env"
+  [ -n "${JOB_CHECK:-}" ] || die "job $id has no acceptance check to run"
+  printf 'check: %s\n' "$JOB_CHECK"
+  ( cd "$JOB_CWD" && eval "$JOB_CHECK" )
+  local rc=$?
+  printf 'exit: %s -> %s\n' "$rc" "$( [ "$rc" -eq 0 ] && echo verified || echo failed_check )"
+  return "$rc"
+}
+
+cmd_brief() {
+  local id=${1:-}; [ -n "$id" ] || die "usage: podium brief <id>"
+  local jd; jd=$(job_dir "$id"); [ -d "$jd" ] || die "unknown job: $id"
+  cat "$jd/brief.txt" 2>/dev/null
+}
+
+# Preflight. Everything the runner needs, checked and reported, nothing assumed.
+cmd_doctor() {
+  local fail=0
+  check() {
+    if eval "$2" >/dev/null 2>&1; then
+      printf 'ok    %s\n' "$1"
+    else
+      printf 'FAIL  %s\n' "$1"; fail=1
+    fi
+  }
+  printf 'podium %s\n\n' "$PODIUM_VERSION"
+  check "config exists at $PODIUM_CONF"        "[ -f '$PODIUM_CONF' ]"
+  check "state dir writable: $PODIUM_HOME"     "mkdir -p '$PODIUM_HOME' && [ -w '$PODIUM_HOME' ]"
+  check "roster dir exists: $PODIUM_BOTS_DIR"  "[ -d '$PODIUM_BOTS_DIR' ]"
+  check "at least one bot on the roster"       "[ -n \"\$(ls -A '$PODIUM_BOTS_DIR' 2>/dev/null)\" ]"
+  check "executor function defined"            "declare -f podium_executor > /dev/null"
+  check "nohup available"                      "command -v nohup"
+  check "ps available"                         "command -v ps"
+  check "sha256 available (tamper-evidence)"   "command -v sha256sum || command -v shasum"
+
+  # The executor is the one thing podium cannot supply. The config names it
+  # explicitly rather than podium guessing it out of the function body, because
+  # a guess that silently fails is worse than no check.
+  if [ -n "${PODIUM_EXECUTOR_CLI:-}" ]; then
+    if command -v "$PODIUM_EXECUTOR_CLI" >/dev/null 2>&1; then
+      printf 'ok    executor "%s" found at %s\n' "$PODIUM_EXECUTOR_CLI" "$(command -v "$PODIUM_EXECUTOR_CLI")"
+    else
+      printf 'FAIL  executor "%s" is not on PATH\n' "$PODIUM_EXECUTOR_CLI"; fail=1
+    fi
+  else
+    printf 'note  PODIUM_EXECUTOR_CLI is unset, so the executor was not checked\n'
+  fi
+
+  local n; n=$(ls -1 "$PODIUM_BOTS_DIR" 2>/dev/null | wc -l | tr -d ' ')
+  printf '\nroster: %s bot(s)\n' "$n"
+  if [ -f "$PODIUM_LOG" ]; then
+    printf 'jobs logged: %s\n' "$(wc -l < "$PODIUM_LOG" | tr -d ' ')"
+  else
+    printf 'jobs logged: 0\n'
+  fi
+  [ "$fail" -eq 0 ] || { printf '\nnot ready.\n'; return 1; }
+  printf '\nready.\n'
+}
+
+cmd_result() {
+  local id=${1:-}; [ -n "$id" ] || die "usage: podium result <id>"
+  local jd; jd=$(job_dir "$id"); [ -d "$jd" ] || die "unknown job: $id"
+  cat "$jd/out.txt" 2>/dev/null
+}
+
+cmd_list() {
+  local filter_bot="" filter_status="" as_json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --bot)    filter_bot=$2; shift 2 ;;
+      --status) filter_status=$2; shift 2 ;;
+      --json)   as_json=1; shift ;;
+      *) shift ;;
+    esac
+  done
+  if [ "$as_json" -eq 1 ]; then
+    local first=1
+    printf '['
+    local jd id
+    for jd in $(ls -d "$PODIUM_JOBS_DIR"/*/ 2>/dev/null | sort -r); do
+      [ -f "$jd/meta.env" ] || continue
+      id=$(basename "$jd")
+      local status; status=$(cat "$jd/status" 2>/dev/null || echo unknown)
+      local bot; bot=$(grep -m1 '^JOB_BOT=' "$jd/meta.env" | cut -d= -f2- | tr -d "'\"")
+      [ -n "$filter_bot" ] && [ "$bot" != "$filter_bot" ] && continue
+      [ -n "$filter_status" ] && [ "$status" != "$filter_status" ] && continue
+      [ "$first" -eq 1 ] || printf ','
+      first=0
+      cmd_status --json "$id" | tr -d '\n'
+    done
+    printf ']\n'
+    return 0
+  fi
+  [ -d "$PODIUM_JOBS_DIR" ] || return 0
+  local jd id bot status
+  for jd in "$PODIUM_JOBS_DIR"/*/; do
+    [ -f "$jd/meta.env" ] || continue
+    id=$(basename "$jd")
+    bot=$(grep -m1 '^JOB_BOT=' "$jd/meta.env" | cut -d= -f2- | tr -d "'\"")
+    status=$(cat "$jd/status" 2>/dev/null || echo unknown)
+    [ -n "$filter_bot" ] && [ "$bot" != "$filter_bot" ] && continue
+    [ -n "$filter_status" ] && [ "$status" != "$filter_status" ] && continue
+    printf '%s %s %s\n' "$id" "$bot" "$status"
+  done | sort
+}
+
+cmd_bots() {
+  [ -d "$PODIUM_BOTS_DIR" ] || { echo "no roster at $PODIUM_BOTS_DIR" >&2; return 1; }
+  local d name desc
+  for d in "$PODIUM_BOTS_DIR"/*/; do
+    [ -f "$d/bot.md" ] || continue
+    name=$(basename "$d")
+    desc=$(bot_meta "$d/bot.md" description)
+    printf '%-14s %s\n' "$name" "$desc"
+  done
+}
+
+cmd_cancel() {
+  local id=${1:-}; [ -n "$id" ] || die "usage: podium cancel <id>"
+  local jd; jd=$(job_dir "$id"); [ -d "$jd" ] || die "unknown job: $id"
+  local pid; pid=$(cat "$jd/pid" 2>/dev/null || echo "")
+  [ -n "$pid" ] && kill -TERM "-$pid" 2>/dev/null; kill -TERM "$pid" 2>/dev/null
+  echo cancelled > "$jd/status"
+  echo "cancelled $id"
+}
+
+cmd_help() {
+  cat <<'USAGE'
+podium - durable job runner for a roster of agent bots
+
+  podium run <bot> "<brief>"   Launch a detached job. Prints the job id.
+      --check "<cmd>"          Acceptance check. The RUNNER executes it after
+                               the bot finishes; a non-zero exit rejects the job.
+      --cwd DIR                Working directory (default: current)
+      --model M                Override the bot's model
+      --timeout S              Hard timeout in seconds
+      --wait                   Block until the job settles
+  podium status <id> [--json]  One line of job state
+  podium show <id>             Full job detail as JSON, including the brief
+  podium brief <id>            The brief the bot was given
+  podium result <id>           The job's output
+  podium list [--bot B] [--status S] [--json]
+  podium doctor                Preflight every requirement and report
+  podium ledger [--unverified] [--bot B] [--limit N] [--json]
+                               The receipts: what ran, and what was verified
+  podium audit                 Walk the receipt chain and report any tampering
+  podium verify <id>           Re-run a job's acceptance check by hand
+  podium bots                  Show the roster
+  podium cancel <id>
+  podium version
+
+State lives in $PODIUM_HOME (default ~/.podium). Every settled job appends one
+line to log.jsonl recording its acceptance check and verdict, so "was this
+actually verified?" is a query, not a matter of trust. Set
+PODIUM_REQUIRE_CHECK=1 to refuse any job launched without a check. Each receipt
+carries the hash of the one before it, so `podium audit` detects an edited or
+truncated ledger.
+USAGE
+}
+
+case "${1:-help}" in
+  run)       shift; cmd_run "$@" ;;
+  status)    shift; cmd_status "$@" ;;
+  show)      shift; cmd_show "$@" ;;
+  brief)     shift; cmd_brief "$@" ;;
+  doctor)    shift; cmd_doctor "$@" ;;
+  ledger)    shift; cmd_ledger "$@" ;;
+  audit)     shift; cmd_audit "$@" ;;
+  verify)    shift; cmd_verify "$@" ;;
+  result)    shift; cmd_result "$@" ;;
+  list)      shift; cmd_list "$@" ;;
+  bots)      shift; cmd_bots "$@" ;;
+  cancel)    shift; cmd_cancel "$@" ;;
+  version)   echo "$PODIUM_VERSION" ;;
+  __worker)  shift; cmd_worker "$@" ;;
+  help|-h|--help) cmd_help ;;
+  *) die "unknown command: $1 (try 'podium help')" ;;
+esac

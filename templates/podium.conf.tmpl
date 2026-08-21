@@ -1,0 +1,42 @@
+# podium.conf - sourced by the `podium` runner. Rendered by SETUP.md.
+#
+# This file defines HOW a bot job is executed. Everything else is data.
+
+# The executor invocation.
+# Args: $1=model $2=cwd $3=outfile $4=brieffile $5=systemfile
+#
+# Default: pi in print mode, headless, with the bot's system prompt appended.
+podium_executor() {
+  pi -p --no-session \
+     ${1:+--model "$1"} \
+     --append-system-prompt "$5" \
+     --cwd "$2" \
+     "$(cat "$4")" > "$3" 2>&1
+}
+
+# Alternative - OpenAI Codex as the executor (ChatGPT Plus/Pro subscription):
+#   podium_executor() {
+#     codex exec -m "$1" -C "$2" --skip-git-repo-check -o "$3" - < "$4"
+#   }
+#
+# Alternative - Claude Code:
+#   podium_executor() {
+#     claude -p --append-system-prompt "$(cat "$5")" < "$4" > "$3" 2>&1
+#   }
+#
+# Any executor works. Map the five arguments onto its flags: read the brief
+# from "$4", read the system prompt from "$5", write the result to "$3".
+
+# The executor binary, so `podium doctor` can confirm it is installed and
+# tell you plainly when it is not.
+PODIUM_EXECUTOR_CLI={{EXECUTOR_CLI}}
+
+PODIUM_BOTS_DIR="{{PODIUM_HOME}}/bots"
+PODIUM_JOBS_DIR="{{PODIUM_HOME}}/jobs"
+PODIUM_LOG="{{PODIUM_HOME}}/log.jsonl"
+
+# Model used when a bot does not name one.
+PODIUM_DEFAULT_MODEL={{DEFAULT_MODEL}}
+
+# Hard timeout in seconds before the watchdog stops a job.
+PODIUM_TIMEOUT={{TIMEOUT}}
