@@ -14,7 +14,7 @@ export PODIUM_CONF="$PODIUM_HOME/podium.conf"
 mkdir -p "$PODIUM_HOME/bots/tester"
 
 cat > "$PODIUM_CONF" <<CONF
-podium_executor() { "$ROOT/test/fixtures/fake-executor" "\$1" "\$2" "\$3" "\$4" "\$5"; }
+podium_executor() { "$ROOT/test/fixtures/fake-executor" "\$1" "\$2" "\$3" "\$4" "\$5"; local code=\$?; printf 'PODIUM_BOT_WRITES=%s\n' "\$PODIUM_BOT_WRITES" >> "\$3"; return "\$code"; }
 PODIUM_TIMEOUT=1800
 PODIUM_BOTS_DIR="$PODIUM_HOME/bots"
 PODIUM_JOBS_DIR="$PODIUM_HOME/jobs"
@@ -53,6 +53,7 @@ res=$("$PODIUM" result "$id")
 assert_contains "result carries the brief" "$res" "brief=hello world"
 assert_contains "bot model is used" "$res" "model=test-model-1"
 assert_contains "system prompt is delivered" "$res" "TESTER_SYSTEM_PROMPT"
+assert_contains "a read-only tools list denies writes" "$res" "PODIUM_BOT_WRITES=0"
 assert_contains "list shows the job" "$("$PODIUM" list)" "$id"
 assert_contains "list filters by bot" "$("$PODIUM" list --bot tester)" "$id"
 assert_eq "list filters out other bots" "$("$PODIUM" list --bot nobody)" ""
@@ -98,6 +99,7 @@ log="$PODIUM_HOME/log.jsonl"
 assert_eq "one log line per settled job" "$(wc -l < "$log" | tr -d ' ')" "5"
 assert_contains "log records the bot" "$(head -1 "$log")" '"bot":"tester"'
 assert_contains "log records timeout flag" "$(grep timeout "$log" | head -1)" '"timed_out":true'
+assert_contains "receipt records the write policy" "$(head -1 "$log")" '"writes":0'
 if command -v python3 >/dev/null 2>&1; then
   valid=$(python3 -c "
 import json,sys
@@ -161,6 +163,63 @@ assert_contains "doctor checks the executor" "$doc" "executor function defined"
 assert_contains "doctor counts the roster" "$doc" "roster: 1 bot(s)"
 missing_conf=$(PODIUM_CONF=/nonexistent/podium.conf "$PODIUM" doctor 2>&1 || true)
 assert_contains "doctor fails loud on a missing config" "$missing_conf" "FAIL"
+
+echo
+echo "== bot tool policy =="
+mkdir -p "$PODIUM_HOME/bots/writer" "$PODIUM_HOME/bots/legacy" "$PODIUM_HOME/bots/rewriter"
+cat > "$PODIUM_HOME/bots/writer/bot.md" <<'BOT'
+---
+name: writer
+tools: read, write
+---
+Writer bot.
+BOT
+cat > "$PODIUM_HOME/bots/legacy/bot.md" <<'BOT'
+---
+name: legacy
+---
+Legacy bot.
+BOT
+cat > "$PODIUM_HOME/bots/rewriter/bot.md" <<'BOT'
+---
+name: rewriter
+tools: read, rewrite
+---
+Rewriter bot.
+BOT
+
+pid=$("$PODIUM" run writer "write policy" --wait 2>/dev/null)
+assert_contains "write grants write access" "$("$PODIUM" result "$pid")" "PODIUM_BOT_WRITES=1"
+pid=$("$PODIUM" run legacy "legacy policy" --wait 2>/dev/null)
+assert_contains "an absent tools list preserves write access" "$("$PODIUM" result "$pid")" "PODIUM_BOT_WRITES=1"
+pid=$("$PODIUM" run rewriter "rewrite policy" --wait 2>/dev/null)
+assert_contains "rewrite does not grant write access" "$("$PODIUM" result "$pid")" "PODIUM_BOT_WRITES=0"
+
+# A job queued by an older podium carries neither JOB_TOOLS nor JOB_WRITES.
+# Under `set -u` the worker died on the first of them: the job stranded in
+# `running`, which is not settled, so --wait hung and no receipt was written.
+# A job that ran and left no record is the one outcome this project forbids.
+mkdir -p "$PODIUM_HOME/bots/legacy/workspace" "$PODIUM_HOME/jobs/legacy-meta"
+oldjd="$PODIUM_HOME/jobs/legacy-meta"
+cat > "$oldjd/meta.env" <<META
+JOB_ID=legacy-meta
+JOB_BOT=legacy
+JOB_MODEL=
+JOB_CWD=$PODIUM_HOME
+JOB_TIMEOUT=30
+JOB_WS=$PODIUM_HOME/bots/legacy/workspace
+JOB_CHECK=true
+META
+printf 'legacy brief\n' > "$oldjd/brief.txt"
+printf 'legacy system\n' > "$oldjd/system.txt"
+: > "$oldjd/out.txt"
+echo queued > "$oldjd/status"
+before=$(wc -l < "$log" | tr -d ' ')
+"$PODIUM" __worker "$oldjd" >/dev/null 2>&1
+assert_contains "a job queued before the upgrade still settles" \
+  "$("$PODIUM" status legacy-meta 2>&1)" "status=done"
+assert_ne "a job queued before the upgrade still leaves a receipt" \
+  "$(wc -l < "$log" | tr -d ' ')" "$before"
 
 
 echo
@@ -377,6 +436,11 @@ assert_contains "and doctor refuses to call it ready" "$out" "not ready"
 
 out=$(drop_conf '{ cat "$5"; cat "$4"; } | codex exec -m "$1" -C "$2" -o "$3" -;')
 assert_contains "an executor passing \$5 is accepted" "$out" "passes the bot system prompt"
+assert_contains "an executor ignoring tool policy is warned" "$out" "tools list is advisory only"
+assert_contains "a tool policy warning remains ready" "$out" "ready."
+
+out=$(drop_conf 'PODIUM_BOT_WRITES="${PODIUM_BOT_WRITES:-1}"; { cat "$5"; cat "$4"; } | codex exec -m "$1" -C "$2" -o "$3" -;')
+case "$out" in *"tools list is advisory only"*) bad "an executor reading tool policy is accepted" "unexpected policy warning" ;; *) ok "an executor reading tool policy is accepted" ;; esac
 
 out=$(drop_conf 'pi -p --append-system-prompt "$5" "$(cat "$4")" > "$3";')
 assert_contains "the flag form of \$5 is accepted too" "$out" "passes the bot system prompt"

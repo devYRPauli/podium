@@ -171,8 +171,16 @@ cmd_worker() {
   local started; started=$(date +%s)
   echo "$started" > "$jd/started"
 
+  # Defaulted, not bare. A job queued by an older podium has a meta.env with
+  # neither field, and `set -u` would kill the worker here: the job would strand
+  # in `running`, which is not settled, so `--wait` hangs and no receipt is ever
+  # written. A job that ran and left no record is the one outcome this project
+  # cannot allow. An unknown policy means unrestricted, as it was before.
+  export PODIUM_BOT_TOOLS="${JOB_TOOLS:-}"
+  export PODIUM_BOT_WRITES="${JOB_WRITES:-1}"
   podium_executor "$JOB_MODEL" "$JOB_CWD" "$jd/out.txt" "$jd/brief.txt" "$jd/system.txt" &
   local exec_pid=$!
+  unset PODIUM_BOT_TOOLS PODIUM_BOT_WRITES
 
   local elapsed=0 timed_out=0
   while kill -0 "$exec_pid" 2>/dev/null; do
@@ -234,7 +242,7 @@ cmd_worker() {
 
   mkdir -p "$(dirname "$PODIUM_LOG")"
   local receipt
-  receipt=$(printf '{"ts":"%s","id":"%s","bot":"%s","model":"%s","status":"%s","exit_code":%s,"duration_secs":%s,"timed_out":%s,"verdict":"%s","verified":%s,"check":"%s","check_exit":%s,"cwd":"%s"}' \
+  receipt=$(printf '{"ts":"%s","id":"%s","bot":"%s","model":"%s","status":"%s","exit_code":%s,"duration_secs":%s,"timed_out":%s,"verdict":"%s","verified":%s,"check":"%s","check_exit":%s,"cwd":"%s","writes":%s}' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     "$(json_escape "$JOB_ID")" \
     "$(json_escape "$JOB_BOT")" \
@@ -245,7 +253,8 @@ cmd_worker() {
     "$( [ "$verdict" = "verified" ] && echo true || echo false )" \
     "$(json_escape "${JOB_CHECK:-}")" \
     "$check_exit" \
-    "$(json_escape "$JOB_CWD")")
+    "$(json_escape "$JOB_CWD")" \
+    "${JOB_WRITES:-1}")
   append_receipt "$receipt"
 }
 
@@ -282,6 +291,14 @@ cmd_run() {
   local bf; bf=$(bot_file "$bot")
   [ -n "$model" ] || model=$(bot_meta "$bf" model)
   [ -n "$model" ] || model="$PODIUM_DEFAULT_MODEL"
+  local tools; tools=$(bot_meta "$bf" tools)
+  local writes=1
+  if [ -n "$tools" ]; then
+    writes=0
+    case ",$(printf '%s' "$tools" | sed 's/[[:space:]]*,[[:space:]]*/,/g')," in
+      *,write,*|*,edit,*) writes=1 ;;
+    esac
+  fi
 
   # A bot's workspace is its own directory unless the caller overrides cwd.
   local ws; ws="$(bot_dir "$bot")/workspace"
@@ -308,10 +325,23 @@ cmd_run() {
     printf 'JOB_TIMEOUT=%q\n' "$timeout"
     printf 'JOB_WS=%q\n'      "$ws"
     printf 'JOB_CHECK=%q\n'   "$check"
+    printf 'JOB_TOOLS=%q\n'   "$tools"
+    printf 'JOB_WRITES=%q\n'  "$writes"
   } > "$jd/meta.env"
 
   echo queued > "$jd/status"
   : > "$jd/out.txt"
+
+  # Say where the work will land, and whether it may write there. --cwd defaults
+  # to the current directory, so a writing bot edits the repository you happen to
+  # be standing in, and it keeps doing so after you close the terminal. That is
+  # usually what you want and never what you want to discover afterwards.
+  # stderr, because callers capture the job id from stdout.
+  if [ "$writes" -eq 1 ]; then
+    printf 'podium: %s may write in %s\n' "$bot" "$cwd" >&2
+  else
+    printf 'podium: %s is read-only in %s\n' "$bot" "$cwd" >&2
+  fi
 
   # Detach. nohup plus an exiting parent means init adopts the worker, so the
   # job outlives the shell (and the agent session) that launched it.
@@ -622,6 +652,15 @@ cmd_doctor() {
       printf 'FAIL  podium_executor never reads "$5" - the bot system prompt and\n'
       printf '      memory are dropped. Jobs will succeed as the wrong persona.\n'
       fail=1
+    fi
+  fi
+
+  if declare -f podium_executor > /dev/null; then
+    if declare -f podium_executor | grep -Eq 'PODIUM_BOT_(WRITES|TOOLS)'; then
+      printf 'ok    the executor enforces the bot tool policy\n'
+    else
+      printf "WARN  the bot tool policy is not enforced by this executor - a bot's\n"
+      printf '      tools list is advisory only.\n'
     fi
   fi
 
