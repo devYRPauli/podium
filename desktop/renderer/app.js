@@ -82,7 +82,7 @@ function renderRail() {
     const bits = [];
     if (bot.model) bits.push(bot.model);
     if (bot.memoryLines) bits.push(`${bot.memoryLines} memories`);
-    if (bits.length) card.appendChild(el("div", "m", bits.join(" · ")));
+    if (bits.length) card.appendChild(el("div", "m", bits.join(" - ")));
     body.appendChild(card);
   }
 
@@ -124,7 +124,7 @@ function renderTranscript() {
     const row = el("div", `tool ${call.state}`);
     row.appendChild(el("span", "name", call.name));
     const detail = call.args && call.args.bot
-      ? ` → ${call.args.bot}`
+      ? ` -> ${call.args.bot}`
       : call.args && call.args.job ? ` ${call.args.job}` : "";
     row.appendChild(document.createTextNode(detail));
     t.appendChild(row);
@@ -160,7 +160,7 @@ function renderJobs() {
 
     const meta = [relTime(job.duration_secs)];
     if (job.model) meta.push(job.model);
-    card.appendChild(el("div", "meta", meta.join(" · ")));
+    card.appendChild(el("div", "meta", meta.join(" - ")));
 
     const open = () => openJob(job.id);
     card.addEventListener("click", open);
@@ -239,7 +239,7 @@ async function renderReceipts() {
   chainRow.appendChild(el("span", "badge " + (chain.intact ? "verified" : "failed"),
     chain.intact ? "chain intact" : "tampered"));
   chainRow.appendChild(el("span", "chaintext", chain.intact
-    ? `${chain.receipts} receipts, hash-chained. Head ${chain.head.slice(0, 12)}…`
+    ? `${chain.receipts} receipts, hash-chained. Head ${chain.head.slice(0, 12)}...`
     : chain.detail.split("\n")[0] || "The ledger has been edited or truncated."));
   wrap.appendChild(chainRow);
 
@@ -270,7 +270,7 @@ async function renderReceipts() {
     tr.appendChild(el("td", null, r.status));
     const vd = el("td");
     const cls = r.verified === true ? "verified" : (r.status === "rejected" ? "failed" : "unverified");
-    vd.appendChild(el("span", `badge ${cls}`, r.verdict || "—"));
+    vd.appendChild(el("span", `badge ${cls}`, r.verdict || "-"));
     tr.appendChild(vd);
     const checkCell = el("td", "check");
     if (r.check) checkCell.textContent = r.check;
@@ -298,7 +298,7 @@ async function openJob(id) {
   const body = $("#sheet-body");
   $("#sheet-title").textContent = id;
   clear(body);
-  body.appendChild(el("div", "empty", "Loading…"));
+  body.appendChild(el("div", "empty", "Loading..."));
   sheet.hidden = false;
 
   let job;
@@ -333,7 +333,7 @@ async function openJob(id) {
   if (job.check) {
     const passed = job.check_exit === 0;
     const f = el("div", "field");
-    f.appendChild(el("div", "k", `acceptance check — exit ${job.check_exit === null ? "not run" : job.check_exit}`));
+    f.appendChild(el("div", "k", `acceptance check - exit ${job.check_exit === null ? "not run" : job.check_exit}`));
     f.appendChild(el("pre", passed ? "pass" : "fail", job.check));
     body.appendChild(f);
     if (job.check_output) field("check output", job.check_output, passed ? "pass" : "fail");
@@ -401,7 +401,7 @@ function setBusy(busy) {
   $("#stop").hidden = !busy;
   $("#conn").className = `dot ${state.running ? (busy ? "busy" : "live") : ""}`;
   $("#conn").title = state.running ? (busy ? "working" : "orchestrator ready") : "orchestrator stopped";
-  $("#hint").textContent = busy ? "Working — press Enter to steer it mid-turn." : "";
+  $("#hint").textContent = busy ? "Working - press Enter to steer it mid-turn." : "";
 }
 
 // ---- wiring ----------------------------------------------------------------

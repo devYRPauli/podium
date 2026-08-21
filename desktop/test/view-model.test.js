@@ -59,9 +59,9 @@ test("relTime formats across the ranges and handles junk", () => {
   assert.strictEqual(relTime(3599), "59m 59s");
   assert.strictEqual(relTime(3600), "1h 0m");
   assert.strictEqual(relTime(7325), "2h 2m");
-  assert.strictEqual(relTime(null), "—");
-  assert.strictEqual(relTime(undefined), "—");
-  assert.strictEqual(relTime("nope"), "—");
+  assert.strictEqual(relTime(null), "-");
+  assert.strictEqual(relTime(undefined), "-");
+  assert.strictEqual(relTime("nope"), "-");
   assert.strictEqual(relTime(-5), "0s", "a clock skew must not render as negative");
 });
 

@@ -63,13 +63,13 @@ can host a persistent multi-bot system and bill against a subscription.
 |---|---|---|---|---|
 | Subscription auth | Yes, but only for itself | Yes (ChatGPT Plus/Pro) | Yes, **seven providers** | You build it |
 | Sub-agents | Yes (Task tool) | Limited | Yes (subagent extension) | You build it |
-| Persistent agent identity | No | No | No | — |
-| Durable background jobs | No - die with the session | No | No | — |
-| Extension API | Hooks, skills, MCP | Thin | Full TS API: tools, events, commands, UI | — |
-| Embeddable SDK | Agent SDK | No | Yes (`createAgentSession`) | — |
-| Headless protocol | `-p`, stream-json | `exec` | RPC mode (JSONL), JSON event mode | — |
+| Persistent agent identity | No | No | No | - |
+| Durable background jobs | No - die with the session | No | No | - |
+| Extension API | Hooks, skills, MCP | Thin | Full TS API: tools, events, commands, UI | - |
+| Embeddable SDK | Agent SDK | No | Yes (`createAgentSession`) | - |
+| Headless protocol | `-p`, stream-json | `exec` | RPC mode (JSONL), JSON event mode | - |
 | Chat surface | No | No | **pi-chat**: Discord + Telegram | You build it |
-| Sandbox | Limited | Yes | Gondolin micro-VM, Docker, OpenShell | — |
+| Sandbox | Limited | Yes | Gondolin micro-VM, Docker, OpenShell | - |
 
 **Pi wins, and not narrowly.** It is the only one of the four that is a *harness*
 rather than a product: the agent loop, provider abstraction, session store and
@@ -87,8 +87,8 @@ Concretely, Pi already ships:
   `AgentSessionRuntime` with fork/resume/import)
 - RPC mode - JSONL over stdin/stdout, so any front end can drive a session
 - `examples/extensions/subagent` - single, parallel (max 8, 4 concurrent) and
-  chained delegation, spawning `pi --mode json -p --no-session --model … --tools
-  … --append-system-prompt …`
+  chained delegation, spawning `pi --mode json -p --no-session --model ... --tools
+  ... --append-system-prompt ...`
 - `examples/extensions/handoff.ts` - lossless context transfer into a fresh
   session, which is what Grok Bot's group-chat handoff is doing underneath
 - **`earendil-works/pi-chat`** - Discord and Telegram channels bridged to a pi
@@ -121,7 +121,7 @@ shipped problem with signed installers. Building it again to have it is wasted
 effort; the only defensible reason to build is a property none of them have.
 
 **Pi keeps turning up.** Rakazo uses it for model credentials. pi-gui is a shell
-around it. That is independent confirmation of the harness choice in §4.
+around it. That is independent confirmation of the harness choice in section 4.
 
 **Nobody enforces verification.** Every one of these will happily tell you a task
 is complete because the sub-agent said so. Not one runs a mechanical acceptance
@@ -205,11 +205,11 @@ Ranked by how cleanly they meet "my subscription, not API credit":
    should be the executor fleet.
 2. **GitHub Copilot.** Flat rate, officially supported, cheap. Good second
    provider so a rate limit on one does not stop everything.
-3. **xAI (Grok/X subscription).** Native `/login xai` → "Use a subscription".
+3. **xAI (Grok/X subscription).** Native `/login xai` -> "Use a subscription".
    Ironic and effective.
 4. **Flat-rate coding plans** (ZAI, Kimi, Qwen, MiniMax). Cheap per-month, no
    metering anxiety, fine for scouts and other high-volume low-stakes bots.
-5. **Claude Pro/Max — read this carefully.** Pi implements Anthropic OAuth, but
+5. **Claude Pro/Max - read this carefully.** Pi implements Anthropic OAuth, but
    Pi's own docs state that third-party harness usage "draws from extra usage and
    is billed per token, not against Claude plan limits." Separately, Anthropic's
    stated policy restricts subscription OAuth tokens to Claude Code and
@@ -244,7 +244,7 @@ Two of six are already yours. Two more are off-the-shelf. Podium is the only
 genuinely new construction, and it is a few hundred lines of bash plus one
 extension.
 
-The survey in §4b narrows that further. Durability, persistent bot identity and a
+The survey in section 4b narrows that further. Durability, persistent bot identity and a
 chat surface all exist elsewhere. Enforced verification does not. That is the one
 column in the table above where the honest answer is "nobody, yet".
 

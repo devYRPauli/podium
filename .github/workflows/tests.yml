@@ -7,6 +7,14 @@ on:
   workflow_dispatch:
 
 jobs:
+  ascii:
+    name: ascii only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every tracked file is plain ASCII
+        run: ./test/ascii.sh
+
   runner:
     name: runner (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

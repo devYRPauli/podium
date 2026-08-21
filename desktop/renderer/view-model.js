@@ -38,7 +38,7 @@
   }
 
   function relTime(seconds) {
-    if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) return "—";
+    if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) return "-";
     const s = Math.max(0, Math.floor(Number(seconds)));
     if (s < 60) return `${s}s`;
     const m = Math.floor(s / 60);
