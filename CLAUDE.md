@@ -42,7 +42,7 @@ templates/              rendered at install time by docs/SETUP.md. Slots are {{L
   podium.conf.tmpl        defines podium_executor() - how a job actually runs
   ORCHESTRATOR.md.tmpl    the chief-of-staff prompt, installed as a Claude Code skill
 desktop/                Electron console. main/preload/renderer split, no Node in the renderer
-test/run.sh             the runner suite - 126 assertions against a stand-in executor
+test/run.sh             the runner suite - 127 assertions against a stand-in executor
 test/ascii.sh           repo hygiene: every tracked file is plain ASCII. CI runs it.
 demo.sh                 thirty-second walkthrough, no auth needed
 ```
@@ -117,7 +117,7 @@ State lives in `$PODIUM_HOME` (default `~/.podium`): `jobs/<id>/`, `log.jsonl`,
 
 ```sh
 ./test/ascii.sh               # hygiene: plain ASCII everywhere
-./test/run.sh                 # runner:  126 assertions
+./test/run.sh                 # runner:  127 assertions
 cd desktop && npm test        # bridges: 52 assertions
 cd desktop && npm run smoke   # the UI:  13 assertions + screenshots (needs xvfb on Linux)
 ./demo.sh                     # see the whole argument in 30 seconds

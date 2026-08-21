@@ -775,7 +775,11 @@ cmd_list() {
     local first=1
     printf '['
     local jd id
-    for jd in "$PODIUM_JOBS_DIR"/*/; do
+    # Newest first, and space-safe. The old form word-split on a command
+    # substitution, so a PODIUM_HOME containing a space dropped jobs silently.
+    # Iterating the glob directly fixes that but reverses the order, and the
+    # desktop console lists jobs in exactly this order, so the sort has to stay.
+    while IFS= read -r jd; do
       [ -f "$jd/meta.env" ] || continue
       id=$(basename "$jd")
       local status; status=$(cat "$jd/status" 2>/dev/null || echo unknown)
@@ -787,7 +791,7 @@ cmd_list() {
       [ "$first" -eq 1 ] || printf ','
       first=0
       cmd_status --json "$id" | tr -d '\n'
-    done
+    done < <(printf '%s\n' "$PODIUM_JOBS_DIR"/*/ | sort -r)
     printf ']\n'
     return 0
   fi

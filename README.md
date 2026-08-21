@@ -199,7 +199,7 @@ The receipts are why the console exists.
 
 v0, honestly labelled:
 
-- **Runner: complete and tested.** 126 assertions, including a live check that a
+- **Runner: complete and tested.** 127 assertions, including a live check that a
   detached worker's parent pid becomes 1 after its launching shell exits, that a
   failed acceptance check rejects a job whose executor exited 0, and that editing
   or deleting a receipt is detected.
@@ -277,7 +277,7 @@ readable in a sitting, with no database, no daemon and no server.
 
 ```sh
 ./test/ascii.sh               # hygiene: every tracked file is plain ASCII
-./test/run.sh                 # runner:  126 assertions
+./test/run.sh                 # runner:  127 assertions
 cd desktop && npm test        # bridges: 52 assertions
 cd desktop && npm run smoke   # the UI:  13 assertions + screenshots
 ```

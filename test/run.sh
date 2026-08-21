@@ -133,6 +133,12 @@ print(d['bot'], d['status'], d['exit_code'], d['model'])
   assert_ne "list --json parses as an array" "$n" ""
   case "$n" in ''|*[!0-9]*) bad "list --json returns jobs" "got '$n'" ;; *) [ "$n" -ge 6 ] && ok "list --json returns every job" || bad "list --json returns every job" "got $n" ;; esac
 
+  # The console renders jobs in the order list --json returns them, newest
+  # first. A space-safe rewrite of this loop once dropped the sort and silently
+  # reversed the UI; only the headless smoke test caught it.
+  order=$(printf '%s' "$lj" | python3 -c "import json,sys; ids=[r['id'] for r in json.load(sys.stdin)]; print('desc' if ids==sorted(ids,reverse=True) else 'not-desc')" 2>&1)
+  assert_eq "list --json is newest first" "$order" "desc"
+
   showj=$("$PODIUM" show "$jid")
   fields=$(printf '%s' "$showj" | python3 -c "
 import json,sys
