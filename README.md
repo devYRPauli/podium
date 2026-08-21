@@ -83,7 +83,7 @@ readable in a sitting, with no database, no daemon and no server.
 
 v0, honestly labelled:
 
-- **Runner: complete and tested.** 79 assertions, including a live check that a
+- **Runner: complete and tested.** 90 assertions, including a live check that a
   detached worker's parent pid becomes 1 after its launching shell exits, that a
   failed acceptance check rejects a job whose executor exited 0, and that editing
   or deleting a receipt is detected.
@@ -163,9 +163,15 @@ WARN  the executor runs, but is not authenticated
       UnrecognizedClientException: The security token included in the request is invalid.
 ```
 
-Run it before your first job. An executor you have not invoked is an executor
-you have not tested — that exact `--cwd` line shipped in v0 and would have
-killed every job launched with the default config.
+Run it before your first job, and after any change to `podium_executor()`. An
+executor you have not invoked is an executor you have not tested — that exact
+`--cwd` line shipped in v0 and would have killed every job launched with the
+default config.
+
+Plain `podium doctor` also checks statically that your executor reads `$5`, the
+bot's system prompt and memory. An executor that ignores it does not fail; it
+returns confident, generic output from the wrong persona, which is a much worse
+failure than a crash. The Codex example shipped in v0 with exactly that bug.
 
 `podium doctor` preflights everything. `podium verify <id>` re-runs a recorded
 check by hand. Set `PODIUM_REQUIRE_CHECK=1` to refuse any job launched without
@@ -203,7 +209,7 @@ The conversation is the front door; the receipts are why it exists.
 ## Tests
 
 ```sh
-./test/run.sh                 # runner:  79 assertions
+./test/run.sh                 # runner:  90 assertions
 cd desktop && npm test        # bridges: 51 assertions
 cd desktop && npm run smoke   # the UI:  13 assertions + screenshots
 ```

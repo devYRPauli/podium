@@ -17,7 +17,11 @@ podium_executor() {
 
 # Alternative - OpenAI Codex as the executor (ChatGPT Plus/Pro subscription):
 #   podium_executor() {
-#     codex exec -m "$1" -C "$2" --skip-git-repo-check -o "$3" - < "$4"
+#     # Codex has no system-prompt flag, so the bot's prompt is prepended to the
+#     # brief. Omit this and the bot's identity, rules and memory are silently
+#     # dropped - the job still succeeds, it is just not that bot doing it.
+#     { cat "$5"; printf '\n\n---\n\n'; cat "$4"; } | \
+#       codex exec -m "$1" -C "$2" --skip-git-repo-check -o "$3" -
 #   }
 #
 # Alternative - Claude Code:
@@ -27,6 +31,11 @@ podium_executor() {
 #
 # Any executor works. Map the five arguments onto its flags: read the brief
 # from "$4", read the system prompt from "$5", write the result to "$3".
+#
+# "$5" is not optional. It carries the bot's system prompt and its durable
+# memory. An executor that ignores it still returns plausible output, which is
+# why `podium doctor` checks for it - a silent wrong answer is worse than a
+# loud failure.
 
 # The executor binary, so `podium doctor` can confirm it is installed and
 # tell you plainly when it is not.

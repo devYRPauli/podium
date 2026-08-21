@@ -351,4 +351,30 @@ assert_contains "a hanging executor is stopped and reported" "$out" "FAIL"
 
 rm -f "$PODIUM_HOME/probe.conf"
 
+
+echo
+echo "== doctor catches an executor that silently drops the bot prompt =="
+# The Codex example shipped in v0 never referenced "$5". Jobs would have
+# succeeded with generic output from the wrong persona - no error anywhere.
+drop_conf() {
+  cat > "$PODIUM_HOME/drop.conf" <<DROP
+podium_executor() { $1 }
+PODIUM_BOTS_DIR="$PODIUM_HOME/bots"
+PODIUM_JOBS_DIR="$PODIUM_HOME/jobs"
+PODIUM_LOG="$PODIUM_HOME/log.jsonl"
+DROP
+  PODIUM_CONF="$PODIUM_HOME/drop.conf" "$PODIUM" doctor 2>&1
+}
+
+out=$(drop_conf 'codex exec -m "$1" -C "$2" -o "$3" - < "$4";')
+assert_contains "an executor ignoring \$5 is reported" "$out" 'never reads "$5"'
+assert_contains "and doctor refuses to call it ready" "$out" "not ready"
+
+out=$(drop_conf '{ cat "$5"; cat "$4"; } | codex exec -m "$1" -C "$2" -o "$3" -;')
+assert_contains "an executor passing \$5 is accepted" "$out" "passes the bot system prompt"
+
+out=$(drop_conf 'pi -p --append-system-prompt "$5" "$(cat "$4")" > "$3";')
+assert_contains "the flag form of \$5 is accepted too" "$out" "passes the bot system prompt"
+rm -f "$PODIUM_HOME/drop.conf"
+
 summary

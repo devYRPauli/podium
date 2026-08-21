@@ -34,7 +34,7 @@ templates/              rendered at install time by SETUP.md. Slots are {{LIKE_T
   orchestrator.ts.tmpl    the Pi extension: roster, delegate, check, collect, receipts, remember
   ORCHESTRATOR.md.tmpl    the chief-of-staff prompt, installed as a Pi skill
 desktop/                Electron console. main/preload/renderer split, no Node in the renderer
-test/run.sh             the runner suite — 86 assertions against a stand-in executor
+test/run.sh             the runner suite — 90 assertions against a stand-in executor
 demo.sh                 thirty-second walkthrough, no auth needed
 ```
 
@@ -69,7 +69,7 @@ State lives in `$PODIUM_HOME` (default `~/.podium`): `jobs/<id>/`, `log.jsonl`,
 ## Working on this
 
 ```sh
-./test/run.sh                 # runner:  86 assertions
+./test/run.sh                 # runner:  90 assertions
 cd desktop && npm test        # bridges: 51 assertions
 cd desktop && npm run smoke    # the UI:  13 assertions + screenshots (needs xvfb on Linux)
 ./demo.sh                     # see the whole argument in 30 seconds

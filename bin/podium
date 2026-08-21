@@ -602,6 +602,19 @@ cmd_doctor() {
   check "ps available"                         "command -v ps"
   check "sha256 available (tamper-evidence)"   "command -v sha256sum || command -v shasum"
 
+  # An executor that never reads "$5" drops the bot's system prompt and memory.
+  # It does not fail - it returns confident, generic output from the wrong
+  # persona. Static check, because the loud failures are the easy ones.
+  if declare -f podium_executor > /dev/null; then
+    if declare -f podium_executor | grep -q '\$5'; then
+      printf 'ok    the executor passes the bot system prompt ($5)\n'
+    else
+      printf 'FAIL  podium_executor never reads "$5" - the bot system prompt and\n'
+      printf '      memory are dropped. Jobs will succeed as the wrong persona.\n'
+      fail=1
+    fi
+  fi
+
   # The executor is the one thing podium cannot supply. The config names it
   # explicitly rather than podium guessing it out of the function body, because
   # a guess that silently fails is worse than no check.
