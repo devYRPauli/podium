@@ -150,6 +150,23 @@ $ podium ledger --unverified
 That last command is the point of the whole project. The third row is a job that
 finished successfully and proved nothing.
 
+`podium doctor` preflights everything, and `podium doctor --executor` actually
+invokes your executor and tells a configuration bug apart from a missing login:
+
+```
+$ podium doctor --executor
+FAIL  the executor rejected its own arguments - podium.conf is wrong
+      Error: Unknown option: --cwd
+
+$ podium doctor --executor
+WARN  the executor runs, but is not authenticated
+      UnrecognizedClientException: The security token included in the request is invalid.
+```
+
+Run it before your first job. An executor you have not invoked is an executor
+you have not tested — that exact `--cwd` line shipped in v0 and would have
+killed every job launched with the default config.
+
 `podium doctor` preflights everything. `podium verify <id>` re-runs a recorded
 check by hand. Set `PODIUM_REQUIRE_CHECK=1` to refuse any job launched without
 one.

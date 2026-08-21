@@ -316,4 +316,39 @@ assert_eq "all six concurrent receipts landed" "$((after - before))" "6"
 assert_contains "the chain survives concurrent appends" "$("$PODIUM" audit)" "chain intact"
 [ -d "$PODIUM_HOME/log.jsonl.lock" ] && bad "the append lock is released" "lock dir left behind" || ok "the append lock is released"
 
+
+echo
+echo "== doctor --executor tells config bugs from auth problems =="
+# The class of bug this exists for: a shipped config once called `pi --cwd`,
+# a flag pi does not have, and no test caught it because the stand-in executor
+# never parses flags.
+probe_conf() {
+  cat > "$PODIUM_HOME/probe.conf" <<PROBE
+podium_executor() { $1 }
+PODIUM_BOTS_DIR="$PODIUM_HOME/bots"
+PODIUM_JOBS_DIR="$PODIUM_HOME/jobs"
+PODIUM_LOG="$PODIUM_HOME/log.jsonl"
+PROBE
+  PODIUM_CONF="$PODIUM_HOME/probe.conf" "$PODIUM" doctor --executor 10 2>&1
+}
+
+out=$(probe_conf 'printf "Error: Unknown option: --cwd\n" > "$3"; return 1;')
+assert_contains "an invented flag is reported as a config bug" "$out" "rejected its own arguments"
+assert_contains "the config bug names the file to fix" "$out" "probe.conf"
+
+out=$(probe_conf 'printf "nosuchexecutor: command not found\n" > "$3"; return 127;')
+assert_contains "a missing binary is reported as missing" "$out" "binary was not found"
+
+out=$(probe_conf 'printf "UnrecognizedClientException: The security token included in the request is invalid.\n" > "$3"; return 1;')
+assert_contains "an auth failure is NOT called a config bug" "$out" "not authenticated"
+case "$out" in *"podium.conf is wrong"*) bad "auth failure is not blamed on the config" ;; *) ok "auth failure is not blamed on the config" ;; esac
+
+out=$(probe_conf 'printf "OK\n" > "$3"; return 0;')
+assert_contains "a working executor is reported working" "$out" "ran and returned output"
+
+out=$(probe_conf 'sleep 30 > "$3";')
+assert_contains "a hanging executor is stopped and reported" "$out" "FAIL"
+
+rm -f "$PODIUM_HOME/probe.conf"
+
 summary

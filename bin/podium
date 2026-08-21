@@ -519,8 +519,72 @@ cmd_brief() {
 }
 
 # Preflight. Everything the runner needs, checked and reported, nothing assumed.
+# Prove the configured executor actually runs, without needing a model.
+#
+# This exists because a shipped config once called `pi --cwd`, a flag pi does
+# not have. Every job would have died on argument parsing, and nothing caught
+# it: the test suite uses a stand-in executor that never parses flags. An
+# executor you have not invoked is an executor you have not tested.
+cmd_doctor_executor() {
+  declare -f podium_executor > /dev/null || { echo "FAIL  no podium_executor defined in $PODIUM_CONF"; return 1; }
+
+  local probe; probe=$(mktemp -d)
+  # shellcheck disable=SC2064
+  trap "rm -rf '$probe'" RETURN
+  printf 'Reply with the single word: OK\n' > "$probe/brief.txt"
+  printf 'You are a probe. Answer in one word.\n' > "$probe/system.txt"
+  : > "$probe/out.txt"
+
+  printf 'probing the executor (up to %ss)...\n' "${1:-45}"
+  ( podium_executor "$PODIUM_DEFAULT_MODEL" "$probe" "$probe/out.txt" "$probe/brief.txt" "$probe/system.txt" ) &
+  local pid=$! waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 1; waited=$((waited+1))
+    [ "$waited" -ge "${1:-45}" ] && { kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null; break; }
+  done
+  wait "$pid" 2>/dev/null
+  local code=$?
+  local out; out=$(cat "$probe/out.txt" 2>/dev/null)
+
+  # A configuration bug and a missing credential are completely different
+  # problems, and telling them apart is the whole point of this check.
+  if printf '%s' "$out" | grep -qiE "unknown option|unrecognized option|invalid option|no such option|unknown argument|unexpected argument"; then
+    printf 'FAIL  the executor rejected its own arguments - podium.conf is wrong\n'
+    printf '      %s\n' "$(printf '%s' "$out" | head -2)"
+    printf '      Fix podium_executor() in %s\n' "$PODIUM_CONF"
+    return 1
+  fi
+
+  if printf '%s' "$out" | grep -qiE "not found|command not found|no such file"; then
+    printf 'FAIL  the executor binary was not found\n'
+    printf '      %s\n' "$(printf '%s' "$out" | head -2)"
+    return 1
+  fi
+
+  if printf '%s' "$out" | grep -qiE "unauthor|credential|security token|api.?key|not logged in|authenticate|401|403|invalid.*token"; then
+    printf 'WARN  the executor runs, but is not authenticated\n'
+    printf '      %s\n' "$(printf '%s' "$out" | head -2)"
+    printf '      Log in yourself - podium never handles credentials.\n'
+    return 0
+  fi
+
+  if [ "$code" -eq 0 ] && [ -s "$probe/out.txt" ]; then
+    printf 'ok    the executor ran and returned output\n'
+    printf '      %s\n' "$(printf '%s' "$out" | head -2)"
+    return 0
+  fi
+
+  printf 'FAIL  the executor exited %s\n' "$code"
+  printf '      %s\n' "$(printf '%s' "$out" | head -3)"
+  return 1
+}
+
 cmd_doctor() {
   local fail=0
+  if [ "${1:-}" = "--executor" ]; then
+    cmd_doctor_executor "${2:-45}"
+    return $?
+  fi
   check() {
     if eval "$2" >/dev/null 2>&1; then
       printf 'ok    %s\n' "$1"
@@ -646,6 +710,8 @@ podium - durable job runner for a roster of agent bots
   podium result <id>           The job's output
   podium list [--bot B] [--status S] [--json]
   podium doctor                Preflight every requirement and report
+  podium doctor --executor [S] Actually invoke the executor and report whether
+                               it runs, is misconfigured, or is unauthenticated
   podium ledger [--unverified] [--bot B] [--limit N] [--json]
                                The receipts: what ran, and what was verified
   podium audit                 Walk the receipt chain and report any tampering

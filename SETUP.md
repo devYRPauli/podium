@@ -82,8 +82,9 @@ Run this and show the user the real output. Do not summarise it.
 export PODIUM_HOME=<PODIUM_HOME>
 P="$PODIUM_HOME/bin/podium"
 
-"$P" doctor          # every requirement, checked
-"$P" bots            # the roster
+"$P" doctor              # every requirement, checked
+"$P" doctor --executor   # actually invoke the executor - catches a wrong flag
+"$P" bots                # the roster
 
 # 1. A job that should VERIFY. The check is real: it fails if the file is absent.
 id=$("$P" run scout "Write the single word PODIUM_OK into ./podium-ok.txt" \
@@ -115,6 +116,9 @@ sleep 5; "$P" status "$bad"
 The install is successful when **all** of these hold:
 
 - `doctor` reports `ready.`
+- `doctor --executor` reports `ok` or `WARN ... not authenticated`. If it says
+  the executor rejected its own arguments, `podium.conf` is wrong and no job
+  will ever run - fix that before going further
 - the parent pid printed in step 2 is `1` - if it is not, the job did not detach
 - job 1 reaches `status=done verdict=verified`
 - job 4 reaches `status=rejected verdict=failed_check`, **even though the bot
