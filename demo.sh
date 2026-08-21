@@ -13,7 +13,8 @@ KIT="$PWD"
 CONSOLE=0
 [ "${1:-}" = "--console" ] && CONSOLE=1
 
-HOME_DIR=$(mktemp -d "${TMPDIR:-/tmp}/podium-demo-XXXXXX")
+TMP_BASE=${TMPDIR:-/tmp}; TMP_BASE=${TMP_BASE%/}
+HOME_DIR=$(mktemp -d "$TMP_BASE/podium-demo-XXXXXX")
 mkdir -p "$HOME_DIR/bin"
 cp bin/podium "$HOME_DIR/bin/podium"; chmod +x "$HOME_DIR/bin/podium"
 cp -R bots "$HOME_DIR/bots"

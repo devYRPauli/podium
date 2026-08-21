@@ -7,11 +7,12 @@
 #
 # Default: pi in print mode, headless, with the bot's system prompt appended.
 podium_executor() {
-  pi -p --no-session \
-     ${1:+--model "$1"} \
-     --append-system-prompt "$5" \
-     --cwd "$2" \
-     "$(cat "$4")" > "$3" 2>&1
+  # pi has no --cwd flag, so the subshell changes directory instead.
+  # --append-system-prompt accepts a file path as well as literal text.
+  ( cd "$2" && pi -p --no-session \
+      ${1:+--model "$1"} \
+      --append-system-prompt "$5" \
+      "$(cat "$4")" ) > "$3" 2>&1
 }
 
 # Alternative - OpenAI Codex as the executor (ChatGPT Plus/Pro subscription):
@@ -21,7 +22,7 @@ podium_executor() {
 #
 # Alternative - Claude Code:
 #   podium_executor() {
-#     claude -p --append-system-prompt "$(cat "$5")" < "$4" > "$3" 2>&1
+#     ( cd "$2" && claude -p --append-system-prompt "$(cat "$5")" < "$4" ) > "$3" 2>&1
 #   }
 #
 # Any executor works. Map the five arguments onto its flags: read the brief
